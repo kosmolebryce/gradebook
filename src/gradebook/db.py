@@ -1,7 +1,11 @@
 import sqlite3
 from datetime import datetime
 from typing import List, Tuple
+from pathlib import Path
 
+DB_NAME = Path("~/.gradebook/gradebook.db").expanduser()
+if not DB_NAME.exists():
+    DB_NAME.mkdir(parents=True, exist_ok=True)
 
 class GradeBookError(Exception):
     """Custom exception for Gradebook errors"""
@@ -9,7 +13,7 @@ class GradeBookError(Exception):
 
 
 class Gradebook:
-    def __init__(self, db_name='gradebook.db'):
+    def __init__(self, db_name=DB_NAME):
         self.conn = sqlite3.connect(db_name)
         self.cursor = self.conn.cursor()
         self.create_tables()
@@ -57,7 +61,6 @@ class Gradebook:
     def validate_category_weights(self, course_id: int, new_category_weight: float = 0) -> bool:
         """
         Validate that all category weights for a course sum to 1.0 (100%).
-        Includes a new category weight if one is being added.
         """
         self.cursor.execute('''
         SELECT SUM(weight) FROM categories WHERE course_id = ?
@@ -65,8 +68,9 @@ class Gradebook:
         current_sum = self.cursor.fetchone()[0] or 0
         total_sum = current_sum + new_category_weight
 
-        # Allow for small floating point imprecision
-        return abs(total_sum - 1.0) < 0.0001 if new_category_weight == 0 else total_sum <= 1.0
+        # Allow sums that are exactly 1.0 or very close to it
+        tolerance = 0.0001
+        return abs(total_sum - 1.0) <= tolerance
 
     def get_remaining_weight(self, course_id: int) -> float:
         """Calculate remaining weight available for new categories."""
@@ -74,29 +78,38 @@ class Gradebook:
         SELECT SUM(weight) FROM categories WHERE course_id = ?
         ''', (course_id,))
         current_sum = self.cursor.fetchone()[0] or 0
-        return round(1.0 - current_sum, 4)
+        return max(0.0, round(1.0 - current_sum, 4))
 
-    def add_course(self, course_name: str, semester: str) -> int:
-        """Add a new course to the database."""
-        self.cursor.execute('''
-        INSERT INTO courses (course_name, semester)
-        VALUES (?, ?)
-        ''', (course_name, semester))
-        self.conn.commit()
-        return self.cursor.lastrowid
+    def add_category(self, course_id: int, category_name: str, weight: float) -> int:
+        """Add a new category for a course."""
+        remaining_weight = self.get_remaining_weight(course_id)
+        tolerance = 0.0001
+
+        # Allow weights that are equal to or very close to the remaining weight
+        if weight > remaining_weight + tolerance:
+            raise GradeBookError(
+                f"Invalid weight {weight}. Remaining weight available: {remaining_weight} (tolerance: ±{tolerance})"
+            )
+
+        try:
+            self.cursor.execute('''
+            INSERT INTO categories (course_id, category_name, weight)
+            VALUES (?, ?, ?)
+            ''', (course_id, category_name, weight))
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.IntegrityError:
+            raise GradeBookError(f"Category '{category_name}' already exists for this course")
 
     def add_categories(self, course_id: int, categories: List[Tuple[str, float]]):
-        """
-        Add multiple categories for a course at once.
-
-        Args:
-            course_id: The ID of the course
-            categories: List of tuples containing (category_name, weight)
-        """
-        # Validate total weights
+        """Add multiple categories for a course at once."""
         total_weight = sum(weight for _, weight in categories)
-        if not abs(total_weight - 1.0) < 0.0001:
-            raise GradeBookError(f"Category weights must sum to 1.0 (got {total_weight})")
+        tolerance = 0.0001
+
+        if not abs(total_weight - 1.0) <= tolerance:  # Allow exact 100% with tolerance
+            raise GradeBookError(
+                f"Category weights must sum to 100% (got {total_weight * 100:.2f}%, tolerance: ±{tolerance * 100:.2f}%)"
+            )
 
         try:
             for category_name, weight in categories:
@@ -109,23 +122,74 @@ class Gradebook:
             self.conn.rollback()
             raise GradeBookError("Duplicate category names are not allowed")
 
-    def add_category(self, course_id: int, category_name: str, weight: float) -> int:
-        """Add a new category for a course."""
-        remaining_weight = self.get_remaining_weight(course_id)
-        if weight > remaining_weight:
-            raise GradeBookError(
-                f"Invalid weight {weight}. Remaining weight available: {remaining_weight}"
-            )
+    def ensure_unassigned_category(self, course_id: int) -> int:
+        """
+        Ensure an 'Unassigned' category exists for the course and return its ID.
+        Creates with zero weight if it doesn't exist.
+        """
+        self.cursor.execute('''
+        SELECT category_id FROM categories 
+        WHERE course_id = ? AND category_name = 'Unassigned'
+        ''', (course_id,))
+        result = self.cursor.fetchone()
 
-        try:
+        if result:
+            return result[0]
+
+        # Create new Unassigned category with 0 weight
+        self.cursor.execute('''
+        INSERT INTO categories (course_id, category_name, weight)
+        VALUES (?, 'Unassigned', 0.0)
+        ''', (course_id,))
+        self.conn.commit()
+        return self.cursor.lastrowid
+
+    def remove_category(self, category_id: int, preserve_assignments: bool = True) -> tuple[str, int]:
+        """
+        Remove a category, optionally preserving its assignments.
+
+        Args:
+            category_id: The ID of the category to remove
+            preserve_assignments: If True, move assignments to Unassigned category
+                                If False, delete assignments
+
+        Returns:
+            Tuple of (category_name, number_of_assignments_affected)
+        """
+        # Get category details and course_id
+        self.cursor.execute('''
+        SELECT category_name, course_id, 
+               (SELECT COUNT(*) FROM assignments WHERE category_id = ?) as assignment_count
+        FROM categories 
+        WHERE category_id = ?
+        ''', (category_id, category_id))
+
+        result = self.cursor.fetchone()
+        if not result:
+            raise GradeBookError("Category not found")
+
+        category_name, course_id, assignment_count = result
+
+        # Don't allow removing the Unassigned category
+        if category_name == 'Unassigned':
+            raise GradeBookError("Cannot remove the Unassigned category")
+
+        if preserve_assignments and assignment_count > 0:
+            # Get or create Unassigned category
+            unassigned_id = self.ensure_unassigned_category(course_id)
+
+            # Move assignments to Unassigned category
             self.cursor.execute('''
-            INSERT INTO categories (course_id, category_name, weight)
-            VALUES (?, ?, ?)
-            ''', (course_id, category_name, weight))
-            self.conn.commit()
-            return self.cursor.lastrowid
-        except sqlite3.IntegrityError:
-            raise GradeBookError(f"Category '{category_name}' already exists for this course")
+            UPDATE assignments 
+            SET category_id = ? 
+            WHERE category_id = ?
+            ''', (unassigned_id, category_id))
+
+        # Remove the category
+        self.cursor.execute('DELETE FROM categories WHERE category_id = ?', (category_id,))
+        self.conn.commit()
+
+        return category_name, assignment_count
 
     def update_category_weight(self, category_id: int, new_weight: float):
         """Update the weight of a category."""
@@ -145,22 +209,28 @@ class Gradebook:
         ''', (category_id,))
         current_weight = self.cursor.fetchone()[0]
 
-        # Calculate what the total would be with the new weight
-        total_weight = (
-                self.get_remaining_weight(course_id) +
-                current_weight +
-                new_weight
-        )
+        # Calculate the remaining weight
+        remaining_weight = self.get_remaining_weight(course_id) + current_weight
+        tolerance = 0.0001
 
-        if total_weight > 1.0:
+        if new_weight > remaining_weight + tolerance:
             raise GradeBookError(
-                f"New weight would exceed 100%. Maximum allowed: {1.0 - total_weight + new_weight}"
+                f"New weight would exceed 100%. Maximum allowed: {remaining_weight} (tolerance: ±{tolerance})"
             )
 
         self.cursor.execute('''
         UPDATE categories SET weight = ? WHERE category_id = ?
         ''', (new_weight, category_id))
         self.conn.commit()
+
+    def add_course(self, course_name: str, semester: str) -> int:
+        """Add a new course to the database."""
+        self.cursor.execute('''
+        INSERT INTO courses (course_name, semester)
+        VALUES (?, ?)
+        ''', (course_name, semester))
+        self.conn.commit()
+        return self.cursor.lastrowid
 
     def add_assignment(self, course_id: int, category_id: int, title: str,
                        max_points: float, earned_points: float) -> int:

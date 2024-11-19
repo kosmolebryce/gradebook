@@ -14,11 +14,15 @@ from rich.live import Live
 from rich.progress import Progress, SpinnerColumn
 from rich import print as rprint
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from gradebook.db import Gradebook
 
 console = Console()
 
+DB_NAME = Path("~/.gradebook/gradebook.db").expanduser()
+if not DB_NAME.exists():
+    DB_NAME.mkdir(parents=True, exist_ok=True)
 
 def format_percentage(value: float) -> str:
     """Format a decimal to percentage with 2 decimal places."""
@@ -26,7 +30,7 @@ def format_percentage(value: float) -> str:
 
 
 class GradeBookCLI:
-    def __init__(self, db_name='gradebook.db'):
+    def __init__(self, db_name=DB_NAME):
         self.gradebook = Gradebook(db_name)
 
     def close(self):
@@ -59,7 +63,6 @@ def add_course(gradebook: GradeBookCLI, name: str, semester: str):
     except Exception as e:
         console.print(f"[red]Error adding course:[/red] {str(e)}")
 
-
 @add.command('categories')
 @click.argument('course_id', type=int)
 @click.pass_obj
@@ -69,25 +72,30 @@ def add_categories(gradebook: GradeBookCLI, course_id: int):
         categories = []
         total_weight = 0.0
 
-        while total_weight < 1.0:
+        while total_weight <= 1.0:  # Changed from < to <= to allow exact 100%
             remaining = 1.0 - total_weight
             console.print(f"\nRemaining weight available: [cyan]{format_percentage(remaining)}[/cyan]")
 
             name = Prompt.ask("Enter category name (or 'done' if finished)")
             if name.lower() == 'done':
-                if total_weight < 1.0:
+                if abs(1.0 - total_weight) > 0.0001:  # Use small epsilon for float comparison
                     console.print("[yellow]Warning: Total weights do not sum to 100%[/yellow]")
                     if not Confirm.ask("Continue anyway?"):
                         continue
                 break
 
             weight = float(Prompt.ask("Enter weight (as decimal)", default="0.25"))
-            if weight > remaining:
+            # Allow weights that would make total exactly 1.0
+            if weight - remaining > 0.0001:  # Use small epsilon for float comparison
                 console.print("[red]Error: Weight would exceed 100%[/red]")
                 continue
 
             categories.append((name, weight))
             total_weight += weight
+
+            # Break if we've reached exactly 100%
+            if abs(total_weight - 1.0) <= 0.0001:
+                break
 
         if categories:
             gradebook.gradebook.add_categories(course_id, categories)
@@ -105,7 +113,6 @@ def add_categories(gradebook: GradeBookCLI, course_id: int):
 
     except Exception as e:
         console.print(f"[red]Error adding categories:[/red] {str(e)}")
-
 
 @add.command('assignment')
 @click.argument('course_id', type=int)
@@ -330,9 +337,10 @@ def remove_course(gradebook: GradeBookCLI, course_id: int, force: bool):
 @remove.command('category')
 @click.argument('category_id', type=int)
 @click.option('--force', is_flag=True, help="Skip confirmation prompt")
+@click.option('--delete-assignments', is_flag=True, help="Delete assignments instead of preserving them")
 @click.pass_obj
-def remove_category(gradebook: GradeBookCLI, category_id: int, force: bool):
-    """Remove a category and all its assignments."""
+def remove_category(gradebook: GradeBookCLI, category_id: int, force: bool, delete_assignments: bool):
+    """Remove a category. By default, preserves assignments by moving them to an Unassigned category."""
     try:
         # Get category details first
         cursor = gradebook.gradebook.cursor
@@ -354,19 +362,29 @@ def remove_category(gradebook: GradeBookCLI, category_id: int, force: bool):
 
         # Show warning and get confirmation
         if not force:
-            console.print(f"[yellow]Warning: This will remove the category '[bold]{category_name}[/bold]' "
-                          f"from course '{course_name}' and its {assignment_count} assignment(s)![/yellow]")
+            if delete_assignments:
+                console.print(f"[yellow]Warning: This will remove the category '[bold]{category_name}[/bold]' "
+                              f"from course '{course_name}' and permanently delete its {assignment_count} assignment(s)![/yellow]")
+            else:
+                console.print(f"[yellow]Warning: This will remove the category '[bold]{category_name}[/bold]' "
+                              f"from course '{course_name}'. {assignment_count} assignment(s) will be moved to 'Unassigned'.[/yellow]")
+
             if not Confirm.ask("Are you sure you want to proceed?"):
                 console.print("Operation cancelled.")
                 return
 
-        # Remove the category (cascading delete should handle assignments)
-        cursor.execute("""
-        DELETE FROM categories WHERE category_id = ?
-        """, (category_id,))
-        gradebook.gradebook.conn.commit()
+        # Remove the category
+        removed_name, affected_count = gradebook.gradebook.remove_category(
+            category_id,
+            preserve_assignments=not delete_assignments
+        )
 
-        console.print(f"[green]Successfully removed category: {category_name}[/green]")
+        if delete_assignments:
+            console.print(
+                f"[green]Successfully removed category '{removed_name}' and {affected_count} assignment(s)[/green]")
+        else:
+            console.print(f"[green]Successfully removed category '{removed_name}'. "
+                          f"{affected_count} assignment(s) moved to 'Unassigned'[/green]")
 
     except Exception as e:
         console.print(f"[red]Error removing category:[/red] {str(e)}")
