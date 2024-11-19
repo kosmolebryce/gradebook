@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "gradebook"
+version = "0.0.1"
+description = "Intuitive methods for managing academic records"
+authors = ["kosmolebryce <k.lebryce@pm.me>"]
+readme = "README.md"
+license = "AGPL-3.0"
+packages = [{include = "gradebook", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+click = "^8.1.7"
+rich = "^13.9.4"
+jupyter = "^1.1.1"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.10.0"
+
+[tool.poetry.scripts]
+gradebook = "gradebook.cli:cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
