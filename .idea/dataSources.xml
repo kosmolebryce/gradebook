@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
-    <data-source source="LOCAL" name="gradebook.db" uuid="474331de-77e9-429d-876a-154257b115fe">
+    <data-source source="LOCAL" name="gradebook.db" uuid="c4ab0b3b-42c3-4a0a-950a-6d9f3849c88f">
       <driver-ref>sqlite.xerial</driver-ref>
       <synchronize>true</synchronize>
       <jdbc-driver>org.sqlite.JDBC</jdbc-driver>
-      <jdbc-url>jdbc:sqlite:$PROJECT_DIR$/src/gradebook/gradebook.db</jdbc-url>
+      <jdbc-url>jdbc:sqlite:$USER_HOME$/.gradebook/gradebook.db</jdbc-url>
       <working-dir>$ProjectFileDir$</working-dir>
     </data-source>
   </component>

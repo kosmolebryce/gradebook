@@ -3,9 +3,11 @@ from datetime import datetime
 from typing import List, Tuple
 from pathlib import Path
 
-DB_NAME = Path("~/.gradebook/gradebook.db").expanduser()
-if not DB_NAME.exists():
-    DB_NAME.mkdir(parents=True, exist_ok=True)
+
+class GradeBookError(Exception):
+    """Custom exception for Gradebook errors"""
+    pass
+
 
 class GradeBookError(Exception):
     """Custom exception for Gradebook errors"""
@@ -13,19 +15,38 @@ class GradeBookError(Exception):
 
 
 class Gradebook:
-    def __init__(self, db_name=DB_NAME):
-        self.conn = sqlite3.connect(db_name)
+    def __init__(self, db_path=None):
+        """Initialize the gradebook database."""
+        if db_path is None:
+            db_path = Path("~/.gradebook/gradebook.db").expanduser()
+
+        # Ensure parent directory exists
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Check if this is a new database
+        is_new_db = not db_path.exists()
+
+        # Connect to database
+        self.conn = sqlite3.connect(str(db_path))
         self.cursor = self.conn.cursor()
-        self.create_tables()
+
+        # Enable foreign key support
+        self.cursor.execute("PRAGMA foreign_keys = ON")
+
+        # Only create tables if this is a new database
+        if is_new_db:
+            self.create_tables()
 
     def create_tables(self):
         """Create the necessary tables if they don't exist."""
-        # Courses table
+        # Modified Courses table - keeping the schema consistent
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS courses (
             course_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            course_name TEXT NOT NULL,
-            semester TEXT
+            course_code TEXT NOT NULL,
+            course_title TEXT NOT NULL,
+            semester TEXT NOT NULL,
+            UNIQUE(course_code, semester)
         )
         ''')
 
@@ -36,7 +57,7 @@ class Gradebook:
             course_id INTEGER,
             category_name TEXT NOT NULL,
             weight REAL NOT NULL,
-            FOREIGN KEY (course_id) REFERENCES courses(course_id),
+            FOREIGN KEY (course_id) REFERENCES courses(course_id) ON DELETE CASCADE,
             UNIQUE(course_id, category_name)
         )
         ''')
@@ -51,8 +72,8 @@ class Gradebook:
             max_points REAL NOT NULL,
             earned_points REAL NOT NULL,
             entry_date TEXT NOT NULL,
-            FOREIGN KEY (course_id) REFERENCES courses(course_id),
-            FOREIGN KEY (category_id) REFERENCES categories(category_id)
+            FOREIGN KEY (course_id) REFERENCES courses(course_id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES categories(category_id) ON DELETE CASCADE
         )
         ''')
 
@@ -223,14 +244,17 @@ class Gradebook:
         ''', (new_weight, category_id))
         self.conn.commit()
 
-    def add_course(self, course_name: str, semester: str) -> int:
+    def add_course(self, course_code: str, course_title: str, semester: str) -> int:
         """Add a new course to the database."""
-        self.cursor.execute('''
-        INSERT INTO courses (course_name, semester)
-        VALUES (?, ?)
-        ''', (course_name, semester))
-        self.conn.commit()
-        return self.cursor.lastrowid
+        try:
+            self.cursor.execute('''
+            INSERT INTO courses (course_code, course_title, semester)
+            VALUES (?, ?, ?)
+            ''', (course_code.upper(), course_title, semester))
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.IntegrityError:
+            raise GradeBookError(f"Course {course_code} already exists for {semester}")
 
     def add_assignment(self, course_id: int, category_id: int, title: str,
                        max_points: float, earned_points: float) -> int:
@@ -309,88 +333,163 @@ class Gradebook:
         ''', (course_id,))
         return self.cursor.fetchall()
 
+    def get_course_id_by_code(self, course_code: str, semester: str = None) -> int:
+        """Get course ID by course code and optionally semester."""
+        if semester:
+            self.cursor.execute('''
+            SELECT course_id FROM courses 
+            WHERE course_code = ? AND semester = ?
+            ''', (course_code.upper(), semester))
+        else:
+            self.cursor.execute('''
+            SELECT course_id, semester FROM courses 
+            WHERE course_code = ?
+            ''', (course_code.upper(),))
+
+        rows = self.cursor.fetchall()
+        if not rows:
+            raise GradeBookError(f"Course '{course_code}' not found")
+        if len(rows) > 1:
+            semesters = [row[1] for row in rows]
+            raise GradeBookError(
+                f"Multiple sections of {course_code} found. "
+                f"Please specify semester. Available: {', '.join(semesters)}"
+            )
+        return rows[0][0] if semester else rows[0][0]
+
+    def get_category_id(self, course_code: str, category_name: str, semester: str = None) -> int:
+        """Get category ID by course code and category name."""
+        course_id = self.get_course_id_by_code(course_code, semester)
+
+        self.cursor.execute('''
+        SELECT category_id FROM categories 
+        WHERE course_id = ? AND category_name = ?
+        ''', (course_id, category_name))
+
+        result = self.cursor.fetchone()
+        if not result:
+            raise GradeBookError(
+                f"Category '{category_name}' not found in {course_code}"
+            )
+        return result[0]
+
+    def get_assignment_id(self, course_code: str, title: str, semester: str = None) -> int:
+        """Get assignment ID by course code and assignment title."""
+        course_id = self.get_course_id_by_code(course_code, semester)
+
+        self.cursor.execute('''
+        SELECT assignment_id FROM assignments 
+        WHERE course_id = ? AND title = ?
+        ''', (course_id, title))
+
+        rows = self.cursor.fetchall()
+        if not rows:
+            raise GradeBookError(
+                f"Assignment '{title}' not found in {course_code}"
+            )
+        if len(rows) > 1:
+            raise GradeBookError(
+                f"Multiple assignments found with title '{title}' in {course_code}. "
+                "Please ensure assignment titles are unique within a course."
+            )
+        return rows[0][0]
+
     def close(self):
         """Close the database connection."""
         self.conn.close()
 
-
 def main():
     gradebook = Gradebook()
 
-    # Add your Fall 2024 courses
-    bio_seminar = gradebook.add_course("Biology Seminar (BIO 302)", "Fall 2024")
-    evolution = gradebook.add_course("Evolution (BIO 515)", "Fall 2024")
-    immuno_lecture = gradebook.add_course("Immunology Lecture (BIO 511)", "Fall 2024")
-    immuno_lab = gradebook.add_course("Immunology Lab (BIO 511)", "Fall 2024")
-    biochem = gradebook.add_course("Introduction to Biochemistry (CHM 352)", "Fall 2024")
-    orgo = gradebook.add_course("Organic Chemistry II (CHM 343)", "Fall 2024")
+    try:
+        db_path = Path("~/.gradebook/gradebook.db").expanduser()
+        print(f"Initializing database at: {db_path}")
 
-    # Example category weights for each course
-    # Note: You should adjust these weights according to your course syllabi
+        gradebook = Gradebook(db_path)
 
-    # Biology Seminar categories
-    bio_seminar_categories = [
-        ("Participation", 0.20),
-        ("Presentations", 0.40),
-        ("Assignments", 0.40)
-    ]
-    gradebook.add_categories(bio_seminar, bio_seminar_categories)
+        # Add your Fall 2024 courses
+        print("\nAdding courses...")
+        bio_seminar = gradebook.add_course("BIO302", "Biology Seminar", "Fall 2024")
+        print("Added BIO302")
 
-    # Evolution categories
-    evolution_categories = [
-        ("Exams", 0.50),
-        ("Lab Reports", 0.30),
-        ("Homework", 0.20)
-    ]
-    gradebook.add_categories(evolution, evolution_categories)
+        # Add your Fall 2024 courses
+        bio_seminar = gradebook.add_course("BIO302", "Biology Seminar", "Fall 2024")
+        evolution = gradebook.add_course("BIO515", "Evolution", "Fall 2024")
+        immuno_lecture = gradebook.add_course("BIO511", "Immunology (Lecture)", "Fall 2024")
+        immuno_lab = gradebook.add_course("BIO511-L", "Immunology (Lab)", "Fall 2024")
+        biochem = gradebook.add_course("CHM352", "Introduction to Biochemistry", "Fall 2024")
+        orgo = gradebook.add_course("CHM343", "Organic Chemistry II", "Fall 2024")
 
-    # Immunology Lecture categories
-    immuno_lecture_categories = [
-        ("Exams", 0.60),
-        ("Quizzes", 0.25),
-        ("Homework", 0.15)
-    ]
-    gradebook.add_categories(immuno_lecture, immuno_lecture_categories)
+        # Example category weights for each course
+        # Note: You should adjust these weights according to your course syllabi
 
-    # Immunology Lab categories
-    immuno_lab_categories = [
-        ("Lab Reports", 0.60),
-        ("Lab Participation", 0.20),
-        ("Lab Practical", 0.20)
-    ]
-    gradebook.add_categories(immuno_lab, immuno_lab_categories)
+        # Biology Seminar categories
+        bio_seminar_categories = [
+            ("Participation", 0.20),
+            ("Presentations", 0.40),
+            ("Assignments", 0.40)
+        ]
+        gradebook.add_categories(bio_seminar, bio_seminar_categories)
 
-    # Biochemistry categories
-    biochem_categories = [
-        ("Exams", 0.50),
-        ("Quizzes", 0.25),
-        ("Homework", 0.25)
-    ]
-    gradebook.add_categories(biochem, biochem_categories)
+        # Evolution categories
+        evolution_categories = [
+            ("Exams", 0.50),
+            ("Lab Reports", 0.30),
+            ("Homework", 0.20)
+        ]
+        gradebook.add_categories(evolution, evolution_categories)
 
-    # Organic Chemistry II categories
-    orgo_categories = [
-        ("Exams", 0.55),
-        ("Lab Reports", 0.25),
-        ("Homework", 0.20)
-    ]
-    gradebook.add_categories(orgo, orgo_categories)
+        # Immunology Lecture categories
+        immuno_lecture_categories = [
+            ("Exams", 0.60),
+            ("Quizzes", 0.25),
+            ("Homework", 0.15)
+        ]
+        gradebook.add_categories(immuno_lecture, immuno_lecture_categories)
 
-    # Print all courses and their category weights
-    courses = [
-        (bio_seminar, "Biology Seminar"),
-        (evolution, "Evolution"),
-        (immuno_lecture, "Immunology Lecture"),
-        (immuno_lab, "Immunology Lab"),
-        (biochem, "Biochemistry"),
-        (orgo, "Organic Chemistry II")
-    ]
+        # Immunology Lab categories
+        immuno_lab_categories = [
+            ("Lab Reports", 0.60),
+            ("Lab Participation", 0.20),
+            ("Lab Practical", 0.20)
+        ]
+        gradebook.add_categories(immuno_lab, immuno_lab_categories)
 
-    for course_id, course_name in courses:
-        print(f"\n{course_name} Categories:")
-        for name, weight in gradebook.get_course_categories(course_id):
-            print(f"- {name}: {weight * 100}%")
+        # Biochemistry categories
+        biochem_categories = [
+            ("Exams", 0.50),
+            ("Quizzes", 0.25),
+            ("Homework", 0.25)
+        ]
+        gradebook.add_categories(biochem, biochem_categories)
 
-    gradebook.close()
+        # Organic Chemistry II categories
+        orgo_categories = [
+            ("Exams", 0.55),
+            ("Lab Reports", 0.25),
+            ("Homework", 0.20)
+        ]
+        gradebook.add_categories(orgo, orgo_categories)
+
+        # Print all courses and their category weights
+        courses = [
+            (bio_seminar, "Biology Seminar"),
+            (evolution, "Evolution"),
+            (immuno_lecture, "Immunology Lecture"),
+            (immuno_lab, "Immunology Lab"),
+            (biochem, "Biochemistry"),
+            (orgo, "Organic Chemistry II")
+        ]
+
+        for course_id, course_title in courses:
+            print(f"\n{course_title} Categories:")
+            for name, weight in gradebook.get_course_categories(course_id):
+                print(f"- {name}: {weight * 100}%")
+
+        gradebook.close()
+    except Exception as e:
+        print(f"Error initializing database: {str(e)}")
+        raise
+
 if __name__ == "__main__":
     main()
