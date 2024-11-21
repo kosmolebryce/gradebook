@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gradebook"
-version = "0.1.0"
+version = "0.1.1"
 description = "Intuitive methods for managing academic records"
 authors = ["kosmolebryce <k.lebryce@pm.me>"]
 readme = "docs/README.md"
@@ -14,6 +14,7 @@ rich = "^13.9.4"
 jupyter = "^1.1.1"
 pytest = "^8.3.3"
 mypy = "^1.13.0"
+pylint = "^3.3.1"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.10.0"

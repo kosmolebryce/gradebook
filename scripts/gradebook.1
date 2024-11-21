@@ -1,0 +1,301 @@
+.\" Manpage for gradebook
+.TH GRADEBOOK 1 "November 2024" "v0.0.6" "User Commands"
+
+.SH NAME
+gradebook \- intuitive CLI for managing academic records
+
+.SH SYNOPSIS
+.B gradebook
+[\fB\-\-db\-path\fR=\fIPATH\fR]
+[\fB\-\-version\fR]
+\fICOMMAND\fR
+[\fIOPTIONS\fR]
+
+.SH DESCRIPTION
+.B gradebook
+is a command-line interface that provides straightforward methods for managing academic records. It supports full CRUD operations for courses, categories, and assignments, along with grade calculation and analysis features.
+
+.SH COMMANDS
+
+.SS Basic Commands
+.TP
+.BR add
+Add items to the gradebook (course, category, assignment)
+.TP
+.BR remove
+Remove items from the gradebook
+.TP
+.BR view
+View and analyze gradebook data
+.TP
+.BR edit
+Edit existing records
+.TP
+.BR move
+Move items between categories
+.TP
+.BR export
+Export gradebook data to files
+
+.SS Add Commands
+.TP
+.BR "add course" " \fICODE\fR \fITITLE\fR \fISEMESTER\fR"
+Add a new course
+.TP
+.BR "add category" " \fICOURSE_CODE\fR \fINAME\fR \fIWEIGHT\fR"
+Add a category to a course
+.TP
+.BR "add assignment" " \fICOURSE_CODE\fR \fICATEGORY\fR \fITITLE\fR \fIMAX\fR \fIEARNED\fR"
+Add an assignment to a category
+
+.SS View Commands
+.TP
+.BR "view courses" " [\fB\-\-detailed\fR] [\fB\-\-semester\fR=\fISEM\fR]"
+List all courses
+.TP
+.BR "view course" " \fICOURSE_CODE\fR"
+Show course details
+.TP
+.BR "view summary"
+Show summary of all courses and grades
+.TP
+.BR "view details" " \fICOURSE_CODE\fR"
+Show comprehensive course summary
+.TP
+.BR "view trends" " \fICOURSE_CODE\fR [\fB\-\-days\fR=\fIN\fR]"
+Show grade trends over time
+.TP
+.BR "view distribution" " \fICOURSE_CODE\fR"
+Show grade distribution
+
+.SS Edit Commands
+.TP
+.BR "edit assignment" " \fICOURSE_CODE\fR \fITITLE\fR [\fIOPTIONS\fR]"
+Edit assignment details
+.TP
+.BR "edit category" " \fICOURSE_CODE\fR \fICATEGORY\fR [\fIOPTIONS\fR]"
+Edit category details
+
+.SS Export Commands
+.TP
+.BR "export course" " \fICOURSE_CODE\fR [\fB\-\-format\fR=\fIFMT\fR]"
+Export a single course
+.TP
+.BR "export all" " [\fB\-\-format\fR=\fIFMT\fR]"
+Export all courses
+
+.SH ALIASES
+The following aliases are available after installing and sourcing the gradebook-aliases.sh script:
+
+.SS Basic Command Aliases
+.TP
+.BR gb
+gradebook (main command)
+.TP
+.BR gba
+gradebook add
+.TP
+.BR gbr
+gradebook remove
+.TP
+.BR gbv
+gradebook view
+.TP
+.BR gbe
+gradebook edit
+.TP
+.BR gbm
+gradebook move
+
+.SS Adding Items Aliases
+.TP
+.BR gbc " \fICODE\fR \fITITLE\fR \fISEMESTER\fR"
+gradebook add course
+.TP
+.BR gbac " \fICOURSE\fR \fINAME\fR \fIWEIGHT\fR"
+gradebook add category
+.TP
+.BR gbaa " \fICOURSE\fR \fICATEGORY\fR \fITITLE\fR \fIMAX\fR \fIEARNED\fR"
+gradebook add assignment
+
+.SS Viewing Aliases
+.TP
+.BR gbvc " [\fIOPTIONS\fR]"
+gradebook view courses
+.TP
+.BR gbvs
+gradebook view summary
+.TP
+.BR gbvd " \fICOURSE\fR"
+gradebook view details
+.TP
+.BR gbvt " \fICOURSE\fR"
+gradebook view trends
+.TP
+.BR gbvg " \fICOURSE\fR"
+gradebook view distribution (grades)
+
+.SS Export Aliases
+.TP
+.BR gbex " \fICOURSE\fR"
+gradebook export course
+.TP
+.BR gbexa
+gradebook export all
+
+.SS Utility Script Aliases
+.TP
+.BR gbu
+gradebook-utils.sh (main utility script)
+.TP
+.BR gbub
+gradebook-utils.sh backup
+.TP
+.BR gbua " \fIFILE\fR"
+gradebook-utils.sh batch-add-assignments
+.TP
+.BR gbue
+gradebook-utils.sh batch-export
+.TP
+.BR gbup " \fICOURSE\fR"
+gradebook-utils.sh analyze-progress
+.TP
+.BR gbuv
+gradebook-utils.sh validate
+
+.SS Quick Grade Aliases
+.TP
+.BR grade " \fICOURSE\fR \fICATEGORY\fR \fITITLE\fR \fIMAX\fR \fIEARNED\fR"
+Alias for gradebook add assignment
+.TP
+.BR grades
+Quick view of all course summaries
+.TP
+.BR graded " \fICOURSE\fR"
+Detailed view of a course
+
+.SS Helper Functions
+.TP
+.BR "quickgrade \fICOURSE\fR \fITITLE\fR \fIEARNED\fR \fIMAX\fR"
+Quickly add a grade using the most recently used category
+.TP
+.BR "progress \fICOURSE\fR"
+Show comprehensive course progress including trends
+.TP
+.BR "export_grades \fR[\fIFORMAT\fR]"
+Export all grades with automatic date-based organization
+
+.SS Installing Aliases
+To install and use the aliases:
+.PP
+.nf
+.RS
+# Install aliases
+gradebook-aliases.sh --install
+
+# Source your shell configuration
+source ~/.bashrc  # or ~/.zshrc for Zsh users
+
+# View available aliases
+gradebook-aliases.sh --help
+.RE
+.fi
+
+.SS Examples Using Aliases
+.PP
+.nf
+.RS
+# Add a new course
+gbc CHM343 "Organic Chemistry" "Fall 2024"
+
+# Quick grade entry using last used category
+quickgrade CHM343 "Quiz 1" 95 100
+
+# View course progress
+progress CHM343
+
+# Export all grades to CSV
+export_grades csv
+
+# Backup database
+gbub
+
+# View detailed course information
+gbvd CHM343
+.RE
+.fi
+
+.SH OPTIONS
+.TP
+.BR \-\-db\-path =\fIPATH\fR
+Specify the path to the database (default: ~/.gradebook/gradebook.db)
+.TP
+.BR \-\-version
+Show version information
+.TP
+.BR \-\-help
+Show help message
+
+.SH EXAMPLES
+.TP
+Add a new course:
+.B gradebook add course
+CHM343 "Organic Chemistry" "Fall 2024"
+.TP
+Add a category:
+.B gradebook add category
+CHM343 "Homework" 0.25
+.TP
+Add an assignment:
+.B gradebook add assignment
+CHM343 "Homework" "Lab Report 1" 100 95
+.TP
+View course summary:
+.B gradebook view details
+CHM343
+.TP
+Export all courses:
+.B gradebook export all
+\-\-format=csv
+
+.SH ENVIRONMENT
+.TP
+.B GRADEBOOK_DB_PATH
+Alternative way to specify database path
+
+.SH FILES
+.TP
+.I ~/.gradebook/gradebook.db
+Default database location
+.TP
+.I ~/.gradebook/exports/
+Default location for exported files
+.TP
+.I ~/.gradebook/backups/
+Location for database backups
+
+.SH BUGS
+Report bugs to: <https://github.com/kosmolebryce/gradebook/issues>
+
+.SH AUTHOR
+Written by Kosmo LeBryce <k.lebryce@pm.me>
+
+.SH COPYRIGHT
+Copyright © 2024 Kosmo LeBryce.
+License AGPLv3+: GNU AGPL version 3 or later <https://gnu.org/licenses/agpl.html>.
+.br
+This is free software: you are free to change and redistribute it.
+There is NO WARRANTY, to the extent permitted by law.
+
+.SH SEE ALSO
+Full documentation at: <https://github.com/kosmolebryce/gradebook>
+.PP
+The full documentation is maintained as a Texinfo manual. If the
+.B info
+and
+.B gradebook
+programs are properly installed at your site, the command
+.IP
+.B info gradebook
+.PP
+should give you access to the complete manual.

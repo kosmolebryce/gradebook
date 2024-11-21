@@ -111,11 +111,13 @@ class Gradebook:
         return abs(total_sum - 1.0) <= tolerance
 
     def get_remaining_weight(self, course_id: int) -> float:
+        """Get remaining unallocated weight for a course."""
         self.cursor.execute('''
             SELECT IFNULL(SUM(weight), 0) FROM categories WHERE course_id=?
         ''', (course_id,))
         used_weight = self.cursor.fetchone()[0]
-        return 100.0 - used_weight
+        # Return actual decimal instead of percentage
+        return 1.0 - used_weight  # Changed from 100.0 to 1.0
 
     def add_category(self, course_id: int, category_name: str, weight: float) -> int:
         """Add a new category for a course.
@@ -125,15 +127,15 @@ class Gradebook:
             category_name: Name of the category
             weight: Weight as decimal (0.0 to 1.0). Example: 0.25 for 25%
         """
-        # Validate weight range before attempting insertion
         if not (0 <= weight <= 1):
             raise GradeBookError(
                 f"Weight must be between 0 and 1 (0% to 100%). Got: {weight * 100}%"
             )
 
         remaining_weight = self.get_remaining_weight(course_id)
-        tolerance = 0.0001
+        tolerance = 0.0001  # Define consistent tolerance
 
+        # Use tolerance in comparison
         if weight > remaining_weight + tolerance:
             raise GradeBookError(
                 f"Invalid weight {weight * 100}%. Remaining weight available: {remaining_weight * 100}% (tolerance: ±{tolerance * 100}%)"
