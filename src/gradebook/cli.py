@@ -1,39 +1,46 @@
-import click
+# gradebook/cli.py
+
 import importlib.metadata
 import statistics
 import sys
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.prompt import Prompt, Confirm
-from rich import box
-from datetime import datetime
+import warnings
+from datetime import datetime, timedelta
+from functools import wraps
+from pathlib import Path
 from typing import List, Tuple
+
+import click
+from rich.console import Group, Console, Text
 from rich.layout import Layout
 from rich.live import Live
+from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+from rich import box
 from rich import print as rprint
-from datetime import datetime, timedelta
-from pathlib import Path
 
 from gradebook.db import Gradebook
 
+def deprecated(message):
+    """Decorator to mark commands as deprecated."""
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            warnings.warn(message, DeprecationWarning, stacklevel=2)
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
 console = Console()
 
-DB_NAME = Path("~/.gradebook/gradebook.db").expanduser()
-if not DB_NAME.exists():
-    DB_NAME.mkdir(parents=True, exist_ok=True)
+DEFAULT_DB_PATH = Path("~/.gradebook/gradebook.db").expanduser()
+if not DEFAULT_DB_PATH.exists():
+    DEFAULT_DB_PATH.mkdir(parents=True, exist_ok=True)
 
 def format_percentage(value: float) -> str:
     """Format a decimal to percentage with 2 decimal places."""
     return f"{value * 100:.2f}%"
-
-class GradeBookCLI:
-    def __init__(self, db_name=DB_NAME):
-        self.gradebook = Gradebook(db_name)
-
-    def close(self):
-        self.gradebook.close()
 
 def get_version():
     """Get version from Poetry's package metadata."""
@@ -42,12 +49,45 @@ def get_version():
     except importlib.metadata.PackageNotFoundError:
         return "unknown"
 
+
+class GradeBookCLI:
+    def __init__(
+            self,
+            db_path=None,
+            existing_db=None
+    ) -> None:
+        db_path = db_path or DEFAULT_DB_PATH
+
+        if existing_db is not None:
+            self.gradebook = existing_db
+            self.db_path = existing_db.db_path
+        else:
+            if isinstance(db_path, str):
+                db_path = Path(db_path)
+            self.db_path = db_path
+            self.gradebook = Gradebook(self.db_path)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if hasattr(self, 'gradebook'):
+            self.gradebook.close()
+
+
 @click.group()
 @click.version_option(version=get_version(), prog_name="gradebook")
+@click.option("--db-path",
+              default=None,
+              help="Specify the path to the database."
+              )
 @click.pass_context
-def cli(ctx):
-    """Gradebook Management System"""
-    ctx.obj = GradeBookCLI()
+def cli(ctx, db_path):
+    """Main entry point"""
+    db_path = db_path or DEFAULT_DB_PATH
+    ctx.ensure_object(dict)
+    ctx.obj = GradeBookCLI(db_path=db_path)
+
 
 @cli.group()
 def add():
@@ -483,207 +523,6 @@ Score: {earned_points}/{max_points} ({percentage:.2f}%)""",
         console.print(f"[red]Error adding assignment:[/red] {str(e)}")
 
 @cli.group()
-def show():
-    """Display detailed information"""
-    pass
-
-
-@show.command('course')
-@click.argument('course_code')
-@click.pass_obj
-def show_course(gradebook: GradeBookCLI, course_code: str):
-    """Display all information for a course."""
-    try:
-        cursor = gradebook.gradebook.cursor
-
-        # Get course information
-        cursor.execute("""
-            SELECT c.course_title, c.semester, c.course_id 
-            FROM courses c 
-            WHERE c.course_code = ?
-        """, (course_code,))
-
-        course = cursor.fetchone()
-        if not course:
-            console.print("[red]Course not found![/red]")
-            return
-
-        course_title, semester, course_id = course
-
-        # Get all categories and assignments
-        cursor.execute("""
-            SELECT 
-                c.category_name,
-                c.weight,
-                a.title,
-                a.max_points,
-                a.earned_points,
-                CASE 
-                    WHEN a.max_points > 0 
-                    THEN (a.earned_points / a.max_points * c.weight) 
-                    ELSE 0 
-                END as weighted_score
-            FROM categories c
-            LEFT JOIN assignments a ON c.category_id = a.category_id
-            WHERE c.course_id = ?
-            ORDER BY c.category_name, COALESCE(a.title, '')
-        """, (course_id,))
-
-        results = cursor.fetchall()
-
-        if not results:
-            console.print("[yellow]No categories found for this course.[/yellow]")
-            return
-
-        table = Table(title=f"{course_title} - {semester}", box=box.ROUNDED)
-        table.add_column("Category", style="cyan")
-        table.add_column("Assignment", style="green")
-        table.add_column("Score", justify="right")
-        table.add_column("Weight", justify="right")
-        table.add_column("Weighted Score", justify="right", style="magenta")
-
-        current_category = None
-        category_scores = {}
-
-        for category, weight, title, max_points, earned_points, weighted_score in results:
-            if category != current_category:
-                # Print category row
-                table.add_row(
-                    f"[bold]{category}[/bold]",
-                    "",
-                    "",
-                    f"[bold]{weight * 100:.1f}%[/bold]",
-                    ""
-                )
-                current_category = category
-
-            if title:  # If there's an assignment
-                percentage = (earned_points / max_points) * 100
-                table.add_row(
-                    "",
-                    title,
-                    f"{earned_points}/{max_points} ({percentage:.1f}%)",
-                    "",
-                    f"{weighted_score * 100:.1f}%"
-                )
-
-                if category not in category_scores:
-                    category_scores[category] = []
-                category_scores[category].append(weighted_score)
-
-        console.print(table)
-
-        # Calculate and show overall grade
-        try:
-            overall_grade = gradebook.gradebook.calculate_course_grade(course_id)
-            console.print(f"\nOverall Grade: [bold magenta]{overall_grade:.1f}%[/bold magenta]")
-
-            # Show category averages
-            console.print("\nCategory Averages:")
-            for category, scores in category_scores.items():
-                if scores:
-                    avg = sum(scores) / len(scores) * 100
-                    console.print(f"{category}: [cyan]{avg:.1f}%[/cyan]")
-
-        except Exception as e:
-            console.print(f"[yellow]Note: {str(e)}[/yellow]")
-
-    except Exception as e:
-        console.print(f"[red]Error displaying course:[/red] {str(e)}")
-
-@cli.group()
-def list():
-    """List items in the gradebook"""
-    pass
-
-@list.command('courses')
-@click.pass_obj
-def list_courses(gradebook: GradeBookCLI):
-    """List all courses in the gradebook."""
-    try:
-        cursor = gradebook.gradebook.cursor
-        cursor.execute("""
-            SELECT c.course_code, c.course_title, c.semester,
-                   COUNT(DISTINCT a.assignment_id) as assignment_count
-            FROM courses c
-            LEFT JOIN assignments a ON c.course_id = a.course_id
-            GROUP BY c.course_id
-            ORDER BY c.semester DESC, c.course_title
-        """)
-        courses = cursor.fetchall()
-
-        if not courses:
-            console.print("[yellow]No courses found in gradebook.[/yellow]")
-            return
-
-        table = Table(title="All Courses", box=box.ROUNDED)
-        table.add_column("Code", style="cyan")
-        table.add_column("Course", style="green")
-        table.add_column("Semester")
-        table.add_column("Assignments", justify="right")
-        table.add_column("Overall Grade", justify="right")
-
-        for code, name, semester, assignment_count in courses:
-            grade = gradebook.gradebook.calculate_course_grade(code) if assignment_count > 0 else "N/A"
-            grade_str = f"{grade}%" if grade != "N/A" else grade
-            table.add_row(
-                code,
-                name,
-                semester,
-                str(assignment_count),
-                grade_str
-            )
-
-        console.print(table)
-
-    except Exception as e:
-        console.print(f"[red]Error listing courses:[/red] {str(e)}")
-
-@list.command('categories')
-@click.argument('course_code')
-@click.pass_obj
-def list_categories(gradebook: GradeBookCLI, course_code: str):
-    """List all categories for a course."""
-    try:
-        course_id = gradebook.gradebook.get_course_id_by_code(course_code)
-        cursor = gradebook.gradebook.cursor
-        cursor.execute("""
-            SELECT cat.category_id, cat.category_name, cat.weight,
-                   COUNT(a.assignment_id) as assignment_count,
-                   COALESCE(AVG(a.earned_points / a.max_points), 0) as avg_score
-            FROM categories cat
-            LEFT JOIN assignments a ON cat.category_id = a.category_id
-            WHERE cat.course_id = ?
-            GROUP BY cat.category_id
-        """, (course_id,))
-        categories = cursor.fetchall()
-
-        if not categories:
-            console.print("[yellow]No categories found for this course.[/yellow]")
-            return
-
-        table = Table(title="Course Categories", box=box.ROUNDED)
-        table.add_column("ID", justify="right", style="cyan")
-        table.add_column("Category", style="green")
-        table.add_column("Weight", justify="right")
-        table.add_column("Assignments", justify="right")
-        table.add_column("Average Score", justify="right")
-
-        for cat_id, name, weight, assignment_count, avg_score in categories:
-            table.add_row(
-                str(cat_id),
-                name,
-                format_percentage(weight),
-                str(assignment_count),
-                format_percentage(avg_score) if assignment_count > 0 else "N/A"
-            )
-
-        console.print(table)
-
-    except Exception as e:
-        console.print(f"[red]Error listing categories:[/red] {str(e)}")
-
-@cli.group()
 def remove():
     """Remove items from the gradebook"""
     pass
@@ -775,48 +614,549 @@ def remove_category(gradebook: GradeBookCLI, course_code: str, category_name: st
     except Exception as e:
         console.print(f"[red]Error removing category:[/red] {str(e)}")
 
+
 @remove.command('assignment')
 @click.argument('course_code')
 @click.argument('assignment_title')
 @click.option('--semester', help="Specify semester if course exists in multiple semesters")
 @click.option('--force', is_flag=True, help="Skip confirmation prompt")
 @click.pass_obj
-def remove_assignment(gradebook: GradeBookCLI, course_code: str, assignment_title: str,
-                      semester: str, force: bool):
-    """Remove an assignment by name."""
-    try:
-        course_id = gradebook.gradebook.get_course_id_by_code(course_code, semester)
-        assignment_id = gradebook.gradebook.get_assignment_id(course_id, assignment_title)
+def remove_assignment(cli: GradeBookCLI, course_code: str, assignment_title: str,
+                      semester: str = None, force: bool = False):
+    """Remove an assignment by name.
 
-        cursor = gradebook.gradebook.cursor
+    Example:
+        gradebook remove assignment CHM343 "Lab Report 1"
+        gradebook remove assignment CHM343 "Lab Report 1" --semester "Fall 2024"
+    """
+    try:
+        # Get course_id using the existing helper method that handles semester logic
+        course_id = cli.gradebook.get_course_id_by_code(course_code, semester)
+
+        cursor = cli.gradebook.cursor
         cursor.execute("""
-            SELECT a.earned_points, a.max_points, cat.category_name
+            SELECT a.assignment_id, a.earned_points, a.max_points, cat.category_name,
+                   c.semester
             FROM assignments a
             JOIN categories cat ON a.category_id = cat.category_id
-            WHERE a.assignment_id = ?
-        """, (assignment_id,))
+            JOIN courses c ON a.course_id = c.course_id
+            WHERE c.course_id = ? AND a.title = ?
+        """, (course_id, assignment_title))
 
-        earned_points, max_points, category_name = cursor.fetchone()
+        result = cursor.fetchone()
+        if not result:
+            console.print(f"[red]Assignment '{assignment_title}' not found in {course_code}[/red]")
+            return
+
+        assignment_id, earned_points, max_points, category_name, course_semester = result
 
         if not force:
             console.print(f"[yellow]Warning: This will remove the assignment '[bold]{assignment_title}[/bold]' "
-                          f"({earned_points}/{max_points}) from {category_name} in {course_code}![/yellow]")
+                          f"({earned_points}/{max_points}) from {category_name} in {course_code} "
+                          f"({course_semester})![/yellow]")
             if not Confirm.ask("Are you sure you want to proceed?"):
                 console.print("Operation cancelled.")
                 return
 
         cursor.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
-        gradebook.gradebook.conn.commit()
+        cli.gradebook.conn.commit()
 
         console.print(f"[green]Successfully removed assignment: {assignment_title}[/green]")
+
+        # Show updated course grade
+        try:
+            overall_grade = cli.gradebook.calculate_course_grade(course_id)
+            console.print(f"\nUpdated course grade: [bold magenta]{overall_grade:.2f}%[/bold magenta]")
+        except Exception as e:
+            pass  # Don't show grade if there are no assignments left
 
     except Exception as e:
         console.print(f"[red]Error removing assignment:[/red] {str(e)}")
 
+
 @cli.group()
 def view():
-    """Visualize gradebook data"""
+    """View and analyze gradebook data"""
     pass
+
+@view.command('assignment')
+@click.argument('course_code')
+@click.argument('assignment_title')
+@click.option('--semester', help="Specify semester if course exists in multiple semesters")
+@click.pass_obj
+def view_assignment(gradebook: GradeBookCLI, course_code: str, assignment_title: str, semester: str):
+    """Display detailed information about a specific assignment.
+
+    Example:
+        gradebook show assignment CHM343 "Lab Report 1"
+    """
+    try:
+        course_id = gradebook.gradebook.get_course_id_by_code(course_code, semester)
+        assignment_id = gradebook.gradebook.get_assignment_id(course_code, assignment_title, semester)
+
+        cursor = gradebook.gradebook.cursor
+        cursor.execute("""
+            SELECT 
+                a.title,
+                a.max_points,
+                a.earned_points,
+                a.entry_date,
+                c.category_name,
+                c.weight,
+                co.course_title,
+                co.semester
+            FROM assignments a
+            JOIN categories c ON a.category_id = c.category_id
+            JOIN courses co ON a.course_id = co.course_id
+            WHERE a.assignment_id = ?
+        """, (assignment_id,))
+
+        result = cursor.fetchone()
+        if not result:
+            console.print(f"[red]Assignment not found![/red]")
+            return
+
+        title, max_points, earned_points, entry_date, category, weight, course_title, semester = result
+
+        # Calculate scores
+        percentage = (earned_points / max_points) * 100
+        weighted_score = (earned_points / max_points) * weight * 100
+
+        # Format date
+        formatted_date = datetime.strptime(entry_date, '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d %I:%M %p')
+
+        # Create layout for display
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header"),
+            Layout(name="details"),
+            Layout(name="stats")
+        )
+
+        # Header with course info
+        layout["header"].update(Panel(
+            f"[bold blue]{course_code}: {course_title}[/bold blue]\n{semester}",
+            title="Course Information"
+        ))
+
+        # Assignment details
+        details = f"""[bold]Assignment:[/bold] {title}
+[bold]Category:[/bold] {category} (Weight: {weight * 100:.1f}%)
+[bold]Date Entered:[/bold] {formatted_date}"""
+
+        layout["details"].update(Panel(
+            details,
+            title="Assignment Details"
+        ))
+
+        # Grade statistics
+        stats = f"""[bold]Score:[/bold] {earned_points}/{max_points}
+[bold]Percentage:[/bold] {percentage:.2f}%
+[bold]Weighted Score:[/bold] {weighted_score:.2f}%"""
+
+        # Add color coding for grade
+        if percentage >= 90:
+            stats = f"[green]{stats}[/green]"
+        elif percentage >= 80:
+            stats = f"[blue]{stats}[/blue]"
+        elif percentage >= 70:
+            stats = f"[yellow]{stats}[/yellow]"
+        else:
+            stats = f"[red]{stats}[/red]"
+
+        layout["stats"].update(Panel(
+            stats,
+            title="Grade Information"
+        ))
+
+        console.print(layout)
+
+    except Exception as e:
+        console.print(f"[red]Error displaying assignment:[/red] {str(e)}")
+
+@view.command('course')
+@click.argument('course_code')
+@click.option('--semester', help="Specify semester if course exists in multiple semesters")
+@click.pass_obj
+def view_course(gradebook: GradeBookCLI, course_code: str, semester: str):
+    """Show detailed information for a specific course."""
+    try:
+        course_id = gradebook.gradebook.get_course_id_by_code(course_code, semester)
+        breakdown = gradebook.gradebook.get_grade_breakdown(course_id)
+
+        # Create course summary layout
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="grades"),
+            Layout(name="recent", size=10)
+        )
+
+        # Header with course info
+        cursor = gradebook.gradebook.cursor
+        cursor.execute("""
+            SELECT course_title, semester
+            FROM courses WHERE course_id = ?
+        """, (course_id,))
+        title, sem = cursor.fetchone()
+
+        layout["header"].update(Panel(
+            f"[bold blue]{course_code}:[/bold blue] {title}\n"
+            f"[cyan]Semester:[/cyan] {sem}\n"
+            f"[green]Overall Grade:[/green] {breakdown['final_grade']:.1f}%",
+            title="Course Summary"
+        ))
+
+        # Grades breakdown
+        table = Table(box=box.ROUNDED)
+        table.add_column("Category", style="cyan")
+        table.add_column("Weight", justify="right")
+        table.add_column("Grade", justify="right", style="green")
+        table.add_column("Items", justify="right")
+
+        for cat in breakdown['categories']:
+            table.add_row(
+                cat['name'],
+                f"{cat['weight'] * 100:.1f}%",
+                f"{cat['grade']:.1f}%",
+                str(cat['assignment_count'])
+            )
+
+        layout["grades"].update(Panel(table, title="Grade Breakdown"))
+
+        # Recent assignments
+        cursor.execute("""
+            SELECT 
+                a.title,
+                a.earned_points,
+                a.max_points,
+                c.category_name,
+                a.entry_date
+            FROM assignments a
+            JOIN categories c ON a.category_id = c.category_id
+            WHERE a.course_id = ?
+            ORDER BY a.entry_date DESC
+            LIMIT 5
+        """, (course_id,))
+
+        recent = cursor.fetchall()
+        if recent:
+            recent_table = Table(box=box.ROUNDED)
+            recent_table.add_column("Date", style="dim")
+            recent_table.add_column("Assignment")
+            recent_table.add_column("Category", style="cyan")
+            recent_table.add_column("Score", justify="right")
+
+            for title, earned, max_points, category, date in recent:
+                date_str = datetime.strptime(date, '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
+                score = (earned / max_points) * 100
+                score_str = f"{earned}/{max_points} ({score:.1f}%)"
+                recent_table.add_row(date_str, title, category, score_str)
+
+            layout["recent"].update(Panel(recent_table, title="Recent Assignments"))
+
+        console.print(layout)
+
+    except Exception as e:
+        console.print(f"[red]Error displaying course:[/red] {str(e)}")
+
+
+@view.command('courses')
+@click.option('--detailed', is_flag=True, help="Show detailed information")
+@click.option('--semester', help="Filter by semester")
+@click.pass_obj
+def view_courses(gradebook: GradeBookCLI, detailed: bool, semester: str):
+    """List all courses with grades and statistics."""
+    try:
+        cursor = gradebook.gradebook.cursor
+
+        query = """
+            SELECT 
+                c.course_code, 
+                c.course_title, 
+                c.semester,
+                COUNT(DISTINCT a.assignment_id) as assignment_count,
+                COUNT(DISTINCT cat.category_id) as category_count
+            FROM courses c
+            LEFT JOIN assignments a ON c.course_id = a.course_id
+            LEFT JOIN categories cat ON c.course_id = cat.course_id
+            WHERE 1=1
+        """
+        params = []
+
+        if semester:
+            query += " AND c.semester = ?"
+            params.append(semester)
+
+        query += """ 
+            GROUP BY c.course_id 
+            ORDER BY c.semester DESC, c.course_code
+        """
+
+        cursor.execute(query, params)
+        courses = cursor.fetchall()
+
+        if not courses:
+            console.print("[yellow]No courses found.[/yellow]")
+            return
+
+        if detailed:
+            # Create detailed view with grade breakdowns
+            for course in courses:
+                code, title, sem, assign_count, cat_count = course
+
+                panel = Panel(
+                    Group(
+                        Text(f"[bold blue]{code}:[/bold blue] {title}"),
+                        Text(f"[cyan]Semester:[/cyan] {sem}"),
+                        Text(f"[green]Categories:[/green] {cat_count}"),
+                        Text(f"[yellow]Assignments:[/yellow] {assign_count}"),
+                    ),
+                    title=f"Course Details"
+                )
+                console.print(panel)
+
+                if assign_count > 0:
+                    try:
+                        breakdown = gradebook.gradebook.get_grade_breakdown(code)
+                        table = Table(title="Grade Breakdown")
+                        table.add_column("Category", style="cyan")
+                        table.add_column("Weight", justify="right")
+                        table.add_column("Grade", justify="right", style="green")
+
+                        for cat in breakdown['categories']:
+                            table.add_row(
+                                cat['name'],
+                                f"{cat['weight'] * 100:.1f}%",
+                                f"{cat['grade']:.1f}%"
+                            )
+
+                        console.print(table)
+                        console.print(
+                            f"\nOverall Grade: [bold magenta]{breakdown['final_grade']:.1f}%[/bold magenta]\n")
+                    except Exception as e:
+                        console.print(f"[yellow]Could not calculate grades: {str(e)}[/yellow]\n")
+        else:
+            # Create simple table view
+            table = Table(title="Courses Overview")
+            table.add_column("Code", style="cyan")
+            table.add_column("Title")
+            table.add_column("Semester")
+            table.add_column("Items", justify="right")
+
+            for course in courses:
+                code, title, sem, assign_count, _ = course
+                table.add_row(code, title, sem, str(assign_count))
+
+            console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]Error listing courses:[/red] {str(e)}")
+
+@view.command('category')
+@click.argument('course_code')
+@click.argument('category_name')
+@click.option('--semester', help="Specify semester if course exists in multiple semesters")
+@click.pass_obj
+def view_category(gradebook: GradeBookCLI, course_code: str, category_name: str, semester: str):
+    """Display detailed information about a specific category.
+
+    Example:
+        gradebook show category CHM343 "Homework"
+    """
+    try:
+        course_id = gradebook.gradebook.get_course_id_by_code(course_code, semester)
+        category_id = gradebook.gradebook.get_category_id(course_code, category_name, semester)
+
+        cursor = gradebook.gradebook.cursor
+        cursor.execute("""
+            SELECT 
+                c.category_name,
+                c.weight,
+                co.course_title,
+                co.semester,
+                COUNT(a.assignment_id) as assignment_count,
+                AVG(a.earned_points / a.max_points) as avg_score,
+                MIN(a.earned_points / a.max_points) as min_score,
+                MAX(a.earned_points / a.max_points) as max_score
+            FROM categories c
+            JOIN courses co ON c.course_id = co.course_id
+            LEFT JOIN assignments a ON c.category_id = a.category_id
+            WHERE c.category_id = ?
+            GROUP BY c.category_id
+        """, (category_id,))
+
+        result = cursor.fetchone()
+        if not result:
+            console.print(f"[red]Category not found![/red]")
+            return
+
+        name, weight, course_title, semester, count, avg, min_score, max_score = result
+
+        # Create summary table
+        table = Table(title=f"{name} - Summary", box=box.ROUNDED)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="magenta")
+
+        table.add_row("Course", f"{course_code}: {course_title}")
+        table.add_row("Semester", semester)
+        table.add_row("Weight", f"{weight * 100:.1f}%")
+        table.add_row("Assignments", str(count))
+
+        if count > 0:
+            raw_score = avg * 100
+            weighted_contribution = raw_score * weight
+            table.add_row("Raw Score", f"{raw_score:.2f}%")
+            table.add_row("Weighted Contribution", f"{weighted_contribution:.2f}%")
+            table.add_row("Highest Assignment", f"{max_score * 100:.2f}%")
+            table.add_row("Lowest Assignment", f"{min_score * 100:.2f}%")
+
+        console.print(table)
+
+        # If there are assignments, show them in detail
+        if count > 0:
+            cursor.execute("""
+                SELECT 
+                    a.title,
+                    a.earned_points,
+                    a.max_points,
+                    a.entry_date,
+                    (a.earned_points / a.max_points) as score
+                FROM assignments a
+                WHERE a.category_id = ?
+                ORDER BY a.entry_date DESC
+            """, (category_id,))
+
+            assignments = cursor.fetchall()
+
+            table = Table(title="Assignments", box=box.ROUNDED)
+            table.add_column("Title", style="cyan")
+            table.add_column("Score", justify="right")
+            table.add_column("Percentage", justify="right")
+            table.add_column("Date", style="dim")
+
+            for title, earned, max_points, date, score in assignments:
+                percentage = score * 100
+                score_str = f"{earned}/{max_points}"
+                date_str = datetime.strptime(date, '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
+
+                # Color code the percentage
+                if percentage >= 90:
+                    percentage_str = f"[green]{percentage:.1f}%[/green]"
+                elif percentage >= 80:
+                    percentage_str = f"[blue]{percentage:.1f}%[/blue]"
+                elif percentage >= 70:
+                    percentage_str = f"[yellow]{percentage:.1f}%[/yellow]"
+                else:
+                    percentage_str = f"[red]{percentage:.1f}%[/red]"
+
+                table.add_row(title, score_str, percentage_str, date_str)
+
+            console.print("\n", table)
+
+    except Exception as e:
+        console.print(f"[red]Error displaying category:[/red] {str(e)}")
+
+
+@view.command('details')
+@click.argument('course_code')
+@click.option('--semester', help="Specify semester if course exists in multiple semesters")
+@click.pass_obj
+def view_course_details(gradebook: GradeBookCLI, course_code: str, semester: str):
+    """Display comprehensive course summary including all grades and statistics."""
+    try:
+        course_id = gradebook.gradebook.get_course_id_by_code(course_code, semester)
+        summary = gradebook.gradebook.get_course_summary(course_id)
+
+        # Create header with course info
+        header = Panel(
+            f"[bold blue]{summary['course_code']}:[/bold blue] {summary['course_title']}\n"
+            f"[cyan]Semester:[/cyan] {summary['semester']}\n"
+            f"[green]Overall Grade:[/green] {summary['final_grade']:.2f}%",
+            title="Course Summary"
+        )
+        console.print(header)
+
+        # Show category breakdown
+        table = Table(title="Category Details", box=box.ROUNDED)
+        table.add_column("Category", style="cyan")
+        table.add_column("Weight", justify="right")
+        table.add_column("Raw Score", justify="right", style="magenta")
+        table.add_column("Weighted", justify="right", style="green")
+
+        category_averages = {}
+        for assignment in summary['assignments']:
+            title, max_points, earned, date, category, weight, weighted = assignment
+            if category not in category_averages:
+                category_averages[category] = {'earned': 0, 'max': 0, 'weight': weight}
+            cat = category_averages[category]
+            cat['earned'] += earned
+            cat['max'] += max_points
+
+        for category, weight in summary['categories']:
+            if category in category_averages:
+                cat = category_averages[category]
+                avg = (cat['earned'] / cat['max']) * 100
+                weighted = avg * cat['weight']
+                table.add_row(
+                    category,
+                    f"{cat['weight'] * 100:.1f}%",
+                    f"{avg:.1f}%",
+                    f"{weighted:.1f}%"
+                )
+            else:
+                table.add_row(category, f"{weight * 100:.1f}%", "N/A", "N/A")
+
+        console.print("\n", table)
+
+        # Show recent assignments
+        if summary['assignments']:
+            table = Table(title="Recent Assignments", box=box.ROUNDED)
+            table.add_column("Date", style="dim")
+            table.add_column("Category", style="cyan")
+            table.add_column("Assignment")
+            table.add_column("Score", justify="right")
+            table.add_column("Grade", justify="right")
+
+            for assignment in sorted(summary['assignments'], key=lambda x: x[3], reverse=True)[:5]:
+                title, max_points, earned, date, category, weight, weighted = assignment
+                percentage = (earned / max_points) * 100
+                date_str = datetime.strptime(date, '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
+
+                # Color code the percentage
+                if percentage >= 90:
+                    grade_str = f"[green]{percentage:.1f}%[/green]"
+                elif percentage >= 80:
+                    grade_str = f"[blue]{percentage:.1f}%[/blue]"
+                elif percentage >= 70:
+                    grade_str = f"[yellow]{percentage:.1f}%[/yellow]"
+                else:
+                    grade_str = f"[red]{percentage:.1f}%[/red]"
+
+                table.add_row(
+                    date_str,
+                    category,
+                    title,
+                    f"{earned}/{max_points}",
+                    grade_str
+                )
+
+            console.print("\n", table)
+
+        # Show grade statistics
+        if summary['assignments']:
+            grades = [(a[2] / a[1]) * 100 for a in summary['assignments']]
+            stats = f"""
+[bold]Grade Statistics:[/bold]
+Highest Grade: {max(grades):.1f}%
+Lowest Grade: {min(grades):.1f}%
+Average Grade: {sum(grades) / len(grades):.1f}%
+Total Assignments: {len(grades)}
+"""
+            console.print(Panel(stats, title="Statistics"))
+
+    except Exception as e:
+        console.print(f"[red]Error displaying course details:[/red] {str(e)}")
 
 @view.command('trends')
 @click.argument('course_code')
@@ -974,28 +1314,19 @@ def view_summary(gradebook: GradeBookCLI, semester: str = None):
     try:
         cursor = gradebook.gradebook.cursor
 
-        # Main summary query (unchanged from before)
+        # Get courses with assignment counts
         query = """
             SELECT 
+                c.course_id,
                 c.course_code, 
                 c.course_title, 
                 c.semester,
                 COUNT(DISTINCT a.assignment_id) as assignment_count,
-                COALESCE(AVG(CASE 
-                    WHEN a.max_points > 0 
-                    THEN (a.earned_points / a.max_points * 100) 
-                    ELSE NULL 
-                END), 0) as avg_grade,
-                MIN(CASE 
-                    WHEN a.max_points > 0 
-                    THEN (a.earned_points / a.max_points * 100) 
-                    ELSE NULL 
-                END) as min_grade,
-                MAX(CASE 
-                    WHEN a.max_points > 0 
-                    THEN (a.earned_points / a.max_points * 100) 
-                    ELSE NULL 
-                END) as max_grade
+                EXISTS (
+                    SELECT 1 
+                    FROM categories cat 
+                    WHERE cat.course_id = c.course_id
+                ) as has_categories
             FROM courses c
             LEFT JOIN assignments a ON c.course_id = a.course_id
         """
@@ -1018,49 +1349,47 @@ def view_summary(gradebook: GradeBookCLI, semester: str = None):
         table.add_column("Title", style="green")
         table.add_column("Semester")
         table.add_column("Assignments", justify="right")
-        table.add_column("Average", justify="right", style="magenta")
-        table.add_column("Range", justify="right", style="yellow")
+        table.add_column("Overall Grade", justify="right", style="magenta")
 
-        for course, title, sem, count, avg, min_grade, max_grade in results:
-            if count > 0:
-                grade_range = f"{min_grade:.1f}% - {max_grade:.1f}%" if min_grade is not None else "N/A"
-                avg_str = f"{avg:.1f}%"
+        for course_id, code, title, sem, count, has_categories in results:
+            # Calculate the weighted grade for each course
+            overall_grade = "N/A"
 
-                # Color-code the average grade
-                if avg >= 90:
-                    avg_str = f"[green]{avg_str}[/green]"
-                elif avg >= 80:
-                    avg_str = f"[blue]{avg_str}[/blue]"
-                elif avg >= 70:
-                    avg_str = f"[yellow]{avg_str}[/yellow]"
-                else:
-                    avg_str = f"[red]{avg_str}[/red]"
-            else:
-                grade_range = "N/A"
-                avg_str = "N/A"
+            try:
+                if count > 0 and has_categories:  # Only calculate if there are assignments and categories
+                    grade = gradebook.gradebook.calculate_course_grade(course_id)
+                    if grade is not None:  # Make sure we got a valid grade back
+                        overall_grade = f"{grade:.1f}%"
+                        # Color code the grade
+                        if grade >= 90:
+                            overall_grade = f"[green]{overall_grade}[/green]"
+                        elif grade >= 80:
+                            overall_grade = f"[blue]{overall_grade}[/blue]"
+                        elif grade >= 70:
+                            overall_grade = f"[yellow]{overall_grade}[/yellow]"
+                        else:
+                            overall_grade = f"[red]{overall_grade}[/red]"
+            except Exception as e:
+                console.print(f"[dim red]Warning: Could not calculate grade for {code}: {str(e)}[/dim red]")
+                overall_grade = "[red]Error[/red]"
 
             table.add_row(
-                course,
+                code,
                 title,
                 sem,
                 str(count),
-                avg_str,
-                grade_range
+                overall_grade
             )
 
         console.print(table)
 
-        # Fixed semester summary query with explicit column references
+        # Show semester summaries if not filtered
         if not semester:
             cursor.execute("""
                 SELECT 
                     c.semester,
                     COUNT(DISTINCT c.course_id) as course_count,
-                    COALESCE(AVG(CASE 
-                        WHEN a.max_points > 0 
-                        THEN (a.earned_points / a.max_points * 100) 
-                        ELSE NULL 
-                    END), 0) as semester_avg
+                    COUNT(DISTINCT a.assignment_id) as total_assignments
                 FROM courses c
                 LEFT JOIN assignments a ON c.course_id = a.course_id
                 GROUP BY c.semester
@@ -1072,17 +1401,16 @@ def view_summary(gradebook: GradeBookCLI, semester: str = None):
                 table = Table(title="Semester Summaries", box=box.ROUNDED)
                 table.add_column("Semester", style="cyan")
                 table.add_column("Courses", justify="right")
-                table.add_column("Average", justify="right", style="magenta")
+                table.add_column("Total Assignments", justify="right")
 
-                for sem, course_count, sem_avg in semester_stats:
-                    avg_str = f"{sem_avg:.1f}%" if sem_avg > 0 else "N/A"
-                    table.add_row(sem, str(course_count), avg_str)
+                for sem, course_count, assignment_count in semester_stats:
+                    table.add_row(sem, str(course_count), str(assignment_count))
 
                 console.print("\n", table)
 
     except Exception as e:
         console.print(f"[red]Error displaying summary:[/red] {str(e)}")
-        raise  # For debugging - remove in production
+
 
 @cli.group()
 def move():
@@ -1504,7 +1832,6 @@ def edit_category(gradebook: GradeBookCLI, course_code: str, category_name: str,
     except Exception as e:
         gradebook.gradebook.conn.rollback()
         console.print(f"[red]Error editing category:[/red] {str(e)}")
-
 
 @cli.group()
 def export():

@@ -1,12 +1,10 @@
+# gradebook/db.py
+
 import sqlite3
+
 from datetime import datetime
-from typing import List, Tuple
 from pathlib import Path
-
-
-class GradeBookError(Exception):
-    """Custom exception for Gradebook errors"""
-    pass
+from typing import List, Tuple
 
 
 class GradeBookError(Exception):
@@ -15,68 +13,87 @@ class GradeBookError(Exception):
 
 
 class Gradebook:
-    def __init__(self, db_path=None):
-        """Initialize the gradebook database."""
+    def __init__(self, db_path):
         if db_path is None:
             db_path = Path("~/.gradebook/gradebook.db").expanduser()
 
-        # Ensure parent directory exists
         db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Check if this is a new database
-        is_new_db = not db_path.exists()
-
-        # Connect to database
+        self.db_path = db_path
         self.conn = sqlite3.connect(str(db_path))
         self.cursor = self.conn.cursor()
-
-        # Enable foreign key support
         self.cursor.execute("PRAGMA foreign_keys = ON")
 
-        # Only create tables if this is a new database
-        if is_new_db:
+        # Always ensure database is properly initialized
+        self.ensure_database_initialized()
+
+    def verify_database_initialized(self) -> bool:
+        """Verify that all required tables exist and have correct schema."""
+        try:
+            tables = ["courses", "categories", "assignments"]
+
+            for table in tables:
+                self.cursor.execute(f"""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name=?
+                """, (table,))
+
+                if not self.cursor.fetchone():
+                    return False
+
+            return True
+
+        except GradeBookError:
+            return False
+
+    def ensure_database_initialized(self) -> None:
+        """Ensure database is initialized, creating tables if needed."""
+        if not self.verify_database_initialized():
             self.create_tables()
 
     def create_tables(self):
-        """Create the necessary tables if they don't exist."""
-        # Modified Courses table - keeping the schema consistent
-        self.cursor.execute('''
-        CREATE TABLE IF NOT EXISTS courses (
-            course_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            course_code TEXT NOT NULL,
-            course_title TEXT NOT NULL,
-            semester TEXT NOT NULL,
-            UNIQUE(course_code, semester)
-        )
-        ''')
+        # Drop existing tables to ensure clean schema
+        self.cursor.executescript('''
+            DROP TABLE IF EXISTS assignments;
+            DROP TABLE IF EXISTS categories;
+            DROP TABLE IF EXISTS courses;
 
-        # Categories table for assignment weights
-        self.cursor.execute('''
-        CREATE TABLE IF NOT EXISTS categories (
-            category_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            course_id INTEGER,
-            category_name TEXT NOT NULL,
-            weight REAL NOT NULL,
-            FOREIGN KEY (course_id) REFERENCES courses(course_id) ON DELETE CASCADE,
-            UNIQUE(course_id, category_name)
-        )
-        ''')
+            CREATE TABLE courses (
+                course_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_code TEXT NOT NULL,
+                course_title TEXT NOT NULL,
+                semester TEXT NOT NULL,
+                UNIQUE(course_code, semester)
+            );
 
-        # Assignments table
-        self.cursor.execute('''
-        CREATE TABLE IF NOT EXISTS assignments (
-            assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            course_id INTEGER,
-            category_id INTEGER,
-            title TEXT NOT NULL,
-            max_points REAL NOT NULL,
-            earned_points REAL NOT NULL,
-            entry_date TEXT NOT NULL,
-            FOREIGN KEY (course_id) REFERENCES courses(course_id) ON DELETE CASCADE,
-            FOREIGN KEY (category_id) REFERENCES categories(category_id) ON DELETE CASCADE
-        )
+            -- Add to create_tables() in db.py
+            CREATE TABLE categories (
+                category_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_id INTEGER,
+                category_name TEXT NOT NULL,
+                weight REAL NOT NULL CHECK (weight >= 0 AND weight <= 1),
+                FOREIGN KEY (course_id) REFERENCES courses(course_id) 
+                    ON DELETE CASCADE
+                    ON UPDATE CASCADE,
+                UNIQUE(course_id, category_name)
+            );
+            
+            CREATE TABLE assignments (
+                assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_id INTEGER,
+                category_id INTEGER,
+                title TEXT NOT NULL,
+                max_points REAL NOT NULL CHECK (max_points > 0),
+                earned_points REAL NOT NULL CHECK (earned_points >= 0),
+                entry_date TEXT NOT NULL,
+                CHECK (earned_points <= max_points),
+                FOREIGN KEY (course_id) REFERENCES courses(course_id) 
+                    ON DELETE CASCADE
+                    ON UPDATE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES categories(category_id)
+                    ON DELETE CASCADE
+                    ON UPDATE CASCADE
+            );
         ''')
-
         self.conn.commit()
 
     def validate_category_weights(self, course_id: int, new_category_weight: float = 0) -> bool:
@@ -94,22 +111,32 @@ class Gradebook:
         return abs(total_sum - 1.0) <= tolerance
 
     def get_remaining_weight(self, course_id: int) -> float:
-        """Calculate remaining weight available for new categories."""
         self.cursor.execute('''
-        SELECT SUM(weight) FROM categories WHERE course_id = ?
+            SELECT IFNULL(SUM(weight), 0) FROM categories WHERE course_id=?
         ''', (course_id,))
-        current_sum = self.cursor.fetchone()[0] or 0
-        return max(0.0, round(1.0 - current_sum, 4))
+        used_weight = self.cursor.fetchone()[0]
+        return 100.0 - used_weight
 
     def add_category(self, course_id: int, category_name: str, weight: float) -> int:
-        """Add a new category for a course."""
+        """Add a new category for a course.
+
+        Args:
+            course_id: ID of the course
+            category_name: Name of the category
+            weight: Weight as decimal (0.0 to 1.0). Example: 0.25 for 25%
+        """
+        # Validate weight range before attempting insertion
+        if not (0 <= weight <= 1):
+            raise GradeBookError(
+                f"Weight must be between 0 and 1 (0% to 100%). Got: {weight * 100}%"
+            )
+
         remaining_weight = self.get_remaining_weight(course_id)
         tolerance = 0.0001
 
-        # Allow weights that are equal to or very close to the remaining weight
         if weight > remaining_weight + tolerance:
             raise GradeBookError(
-                f"Invalid weight {weight}. Remaining weight available: {remaining_weight} (tolerance: ±{tolerance})"
+                f"Invalid weight {weight * 100}%. Remaining weight available: {remaining_weight * 100}% (tolerance: ±{tolerance * 100}%)"
             )
 
         try:
@@ -119,7 +146,11 @@ class Gradebook:
             ''', (course_id, category_name, weight))
             self.conn.commit()
             return self.cursor.lastrowid
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as e:
+            if "CHECK constraint failed" in str(e):
+                raise GradeBookError(
+                    f"Weight must be between 0 and 1 (0% to 100%). Got: {weight * 100}%"
+                )
             raise GradeBookError(f"Category '{category_name}' already exists for this course")
 
     def add_categories(self, course_id: int, categories: List[Tuple[str, float]]):
@@ -165,6 +196,81 @@ class Gradebook:
         self.conn.commit()
         return self.cursor.lastrowid
 
+    def update_category_weight(self, category_id: int, new_weight: float):
+        """Update the weight of a category."""
+        # Get course_id for the category
+        self.cursor.execute('''
+        SELECT course_id, weight FROM categories WHERE category_id = ?
+        ''', (category_id,))
+        result = self.cursor.fetchone()
+        if not result:
+            raise GradeBookError("Category not found")
+
+        course_id, current_weight = result
+        weight_difference = current_weight - new_weight
+
+        if weight_difference > 0:  # Reducing weight, need to create/update Unallocated
+            # Check for existing Unallocated category
+            self.cursor.execute('''
+            SELECT category_id, weight 
+            FROM categories 
+            WHERE course_id = ? AND LOWER(category_name) = 'unallocated'
+            ''', (course_id,))
+            unallocated = self.cursor.fetchone()
+
+            if unallocated:
+                # Update existing Unallocated category
+                new_unallocated_weight = unallocated[1] + weight_difference
+                self.cursor.execute('''
+                UPDATE categories SET weight = ? WHERE category_id = ?
+                ''', (new_unallocated_weight, unallocated[0]))
+            else:
+                # Create new Unallocated category
+                self.cursor.execute('''
+                INSERT INTO categories (course_id, category_name, weight)
+                VALUES (?, 'Unallocated', ?)
+                ''', (course_id, weight_difference))
+
+        # Update the category weight
+        self.cursor.execute('''
+        UPDATE categories SET weight = ? WHERE category_id = ?
+        ''', (new_weight, category_id))
+
+        self.conn.commit()
+
+    def update_category(self, category_id: int, category_name: str = None, weight: float = None):
+        """Update category details."""
+        updates = []
+        params = []
+
+        if category_name:
+            updates.append("category_name = ?")
+            params.append(category_name)
+        if weight is not None:
+            # Fetch course_id to validate weight constraints
+            self.cursor.execute('SELECT course_id FROM categories WHERE category_id = ?', (category_id,))
+            course_id = self.cursor.fetchone()
+            if not course_id:
+                raise GradeBookError("Category not found")
+
+            course_id = course_id[0]
+            remaining_weight = self.get_remaining_weight(course_id)
+            self.cursor.execute('SELECT weight FROM categories WHERE category_id = ?', (category_id,))
+            current_weight = self.cursor.fetchone()[0]
+
+            # Allow weight adjustments within remaining limits
+            if weight > (remaining_weight + current_weight):
+                raise GradeBookError(f"New weight {weight} exceeds available limit")
+
+            updates.append("weight = ?")
+            params.append(weight)
+
+        if updates:
+            query = f"UPDATE categories SET {', '.join(updates)} WHERE category_id = ?"
+            params.append(category_id)
+            self.cursor.execute(query, tuple(params))
+            self.conn.commit()
+
     def remove_category(self, category_id: int, preserve_assignments: bool = True) -> tuple[str, int]:
         """
         Remove a category, optionally preserving its assignments.
@@ -172,18 +278,18 @@ class Gradebook:
         Args:
             category_id: The ID of the category to remove
             preserve_assignments: If True, move assignments to Unassigned category
-                                If False, delete assignments
+                                If False, let cascade delete handle assignments
 
         Returns:
             Tuple of (category_name, number_of_assignments_affected)
         """
-        # Get category details and course_id
+        # Get category details before deletion
         self.cursor.execute('''
-        SELECT category_name, course_id, 
-               (SELECT COUNT(*) FROM assignments WHERE category_id = ?) as assignment_count
-        FROM categories 
-        WHERE category_id = ?
-        ''', (category_id, category_id))
+            SELECT category_name, course_id,
+                   (SELECT COUNT(*) FROM assignments WHERE category_id = c.category_id) as assignment_count
+            FROM categories c 
+            WHERE category_id = ?
+        ''', (category_id,))
 
         result = self.cursor.fetchone()
         if not result:
@@ -191,58 +297,46 @@ class Gradebook:
 
         category_name, course_id, assignment_count = result
 
-        # Don't allow removing the Unassigned category
-        if category_name == 'Unassigned':
+        if category_name.lower() == 'unassigned':
             raise GradeBookError("Cannot remove the Unassigned category")
 
         if preserve_assignments and assignment_count > 0:
-            # Get or create Unassigned category
+            # Get/create Unassigned category
             unassigned_id = self.ensure_unassigned_category(course_id)
 
-            # Move assignments to Unassigned category
+            # Move assignments
             self.cursor.execute('''
-            UPDATE assignments 
-            SET category_id = ? 
-            WHERE category_id = ?
+                UPDATE assignments 
+                SET category_id = ? 
+                WHERE category_id = ?
             ''', (unassigned_id, category_id))
 
-        # Remove the category
+        # Remove category (cascade will handle assignment deletion if not preserved)
         self.cursor.execute('DELETE FROM categories WHERE category_id = ?', (category_id,))
         self.conn.commit()
 
         return category_name, assignment_count
 
-    def update_category_weight(self, category_id: int, new_weight: float):
-        """Update the weight of a category."""
-        # Get course_id for the category
+    def remove_course(self, course_id: int) -> tuple[str, str, str, int]:
+        """Remove a course and all its associated data."""
         self.cursor.execute('''
-        SELECT course_id FROM categories WHERE category_id = ?
-        ''', (category_id,))
+            SELECT course_code, course_title, semester,
+                   (SELECT COUNT(*) FROM assignments WHERE course_id = c.course_id) as assignment_count
+            FROM courses c
+            WHERE course_id = ?
+        ''', (course_id,))
+
         result = self.cursor.fetchone()
         if not result:
-            raise GradeBookError("Category not found")
+            raise GradeBookError("Course not found")
 
-        course_id = result[0]
+        course_code, course_title, semester, assignment_count = result
 
-        # Get current weight
-        self.cursor.execute('''
-        SELECT weight FROM categories WHERE category_id = ?
-        ''', (category_id,))
-        current_weight = self.cursor.fetchone()[0]
-
-        # Calculate the remaining weight
-        remaining_weight = self.get_remaining_weight(course_id) + current_weight
-        tolerance = 0.0001
-
-        if new_weight > remaining_weight + tolerance:
-            raise GradeBookError(
-                f"New weight would exceed 100%. Maximum allowed: {remaining_weight} (tolerance: ±{tolerance})"
-            )
-
-        self.cursor.execute('''
-        UPDATE categories SET weight = ? WHERE category_id = ?
-        ''', (new_weight, category_id))
+        # The ON DELETE CASCADE in the schema will handle the deletions
+        self.cursor.execute('DELETE FROM courses WHERE course_id = ?', (course_id,))
         self.conn.commit()
+
+        return course_code, course_title, semester, assignment_count
 
     def add_course(self, course_code: str, course_title: str, semester: str) -> int:
         """Add a new course to the database."""
@@ -267,6 +361,14 @@ class Gradebook:
         if self.cursor.fetchone()[0] == 0:
             raise GradeBookError("Category does not belong to this course")
 
+        # Check for duplicate assignment
+        self.cursor.execute('''
+        SELECT COUNT(*) FROM assignments
+        WHERE course_id = ? AND title = ?
+        ''', (course_id, title))
+        if self.cursor.fetchone()[0] > 0:
+            raise GradeBookError(f"Assignment '{title}' already exists in this course")
+
         entry_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         self.cursor.execute('''
         INSERT INTO assignments (course_id, category_id, title, max_points, earned_points, entry_date)
@@ -280,35 +382,71 @@ class Gradebook:
         if not self.validate_category_weights(course_id):
             raise GradeBookError("Category weights do not sum to 100%")
 
-        # Get all categories for the course
+        # Get all categories except Unallocated
         self.cursor.execute('''
-        SELECT category_id, weight 
-        FROM categories 
-        WHERE course_id = ?
+            SELECT category_id, category_name, weight
+            FROM categories 
+            WHERE course_id = ? AND LOWER(category_name) != 'unallocated'
+            ORDER BY category_name
         ''', (course_id,))
+
         categories = self.cursor.fetchall()
+        if not categories:
+            return 0.0
 
-        total_weighted_grade = 0
-        total_weight_used = 0
+        total_weighted_grade = 0.0
+        total_weight = 0.0
 
-        for category_id, weight in categories:
-            # Get assignments for this category
-            self.cursor.execute('''
-            SELECT earned_points, max_points 
-            FROM assignments 
-            WHERE category_id = ?
-            ''', (category_id,))
-            assignments = self.cursor.fetchall()
+        for cat_id, cat_name, weight in categories:
+            earned, possible = self.get_category_grade(cat_id)
 
-            if assignments:
-                category_earned = sum(earned for earned, _ in assignments)
-                category_max = sum(max_points for _, max_points in assignments)
-                category_percentage = (category_earned / category_max) if category_max > 0 else 0
-                total_weighted_grade += category_percentage * weight
-                total_weight_used += weight
+            if possible > 0:  # Only include categories with assignments
+                grade = (earned / possible) * 100
+                total_weighted_grade += grade * weight
+                total_weight += weight
 
-        final_grade = (total_weighted_grade / total_weight_used * 100) if total_weight_used > 0 else 0
+        if total_weight == 0:
+            return 0.0
+
+        # Normalize by actual weight used
+        final_grade = total_weighted_grade / total_weight
         return round(final_grade, 2)
+
+    def get_grade_breakdown(self, course_id: int) -> dict:
+        """Get detailed grade breakdown including per-category calculations."""
+        final_grade = self.calculate_course_grade(course_id)
+
+        self.cursor.execute('''
+            SELECT 
+                c.category_name,
+                c.weight,
+                COALESCE(SUM(a.earned_points), 0) as earned,
+                COALESCE(SUM(a.max_points), 0) as possible,
+                COUNT(a.assignment_id) as assignment_count
+            FROM categories c
+            LEFT JOIN assignments a ON c.category_id = a.category_id
+            WHERE c.course_id = ? AND LOWER(c.category_name) != 'unallocated'
+            GROUP BY c.category_id
+            ORDER BY c.category_name
+        ''', (course_id,))
+
+        categories = []
+        for name, weight, earned, possible, count in self.cursor.fetchall():
+            grade = (earned / possible * 100) if possible > 0 else 0
+            categories.append({
+                'name': name,
+                'weight': weight,
+                'grade': grade,
+                'earned': earned,
+                'possible': possible,
+                'assignment_count': count
+            })
+
+        return {
+            'final_grade': final_grade,
+            'categories': categories,
+            'timestamp': datetime.now().isoformat()
+        }
 
     def get_course_assignments(self, course_id: int):
         """Get all assignments for a course with their details."""
@@ -323,6 +461,33 @@ class Gradebook:
         ''', (course_id,))
         return self.cursor.fetchall()
 
+    
+    def get_assignment_by_id(self, assignment_id: int) -> dict:
+        """Get details of a specific assignment."""
+        self.cursor.execute('''
+        SELECT a.assignment_id, a.title, a.max_points, a.earned_points, 
+               a.entry_date, c.category_name, co.course_code, co.semester
+        FROM assignments a
+        JOIN categories c ON a.category_id = c.category_id
+        JOIN courses co ON a.course_id = co.course_id
+        WHERE a.assignment_id = ?
+        ''', (assignment_id,))
+        row = self.cursor.fetchone()
+
+        if not row:
+            raise GradeBookError(f"Assignment with ID {assignment_id} not found")
+
+        return {
+            "assignment_id": row[0],
+            "title": row[1],
+            "max_points": row[2],
+            "earned_points": row[3],
+            "entry_date": row[4],
+            "category_name": row[5],
+            "course_code": row[6],
+            "semester": row[7],
+        }
+
     def get_course_categories(self, course_id: int):
         """Get all categories and their weights for a course."""
         self.cursor.execute('''
@@ -332,6 +497,42 @@ class Gradebook:
         ORDER BY category_name
         ''', (course_id,))
         return self.cursor.fetchall()
+
+
+    def get_category_by_id(self, category_id: int) -> dict:
+        """Get details of a specific category."""
+        self.cursor.execute('''
+        SELECT category_id, category_name, weight, course_id 
+        FROM categories 
+        WHERE category_id = ?
+        ''', (category_id,))
+        row = self.cursor.fetchone()
+
+        if not row:
+            raise GradeBookError(f"Category with ID {category_id} not found")
+
+        return {
+            "category_id": row[0],
+            "category_name": row[1],
+            "weight": row[2],
+            "course_id": row[3],
+        }
+
+    def get_category_grade(self, category_id: int) -> tuple[float, float]:
+        """Calculate grade for a single category."""
+        self.cursor.execute('''
+            SELECT 
+                COALESCE(SUM(earned_points), 0) as total_earned,
+                COALESCE(SUM(max_points), 0) as total_possible
+            FROM assignments
+            WHERE category_id = ?
+        ''', (category_id,))
+
+        earned, possible = self.cursor.fetchone()
+        if possible == 0:
+            return 0.0, 0.0
+
+        return earned, possible
 
     def get_course_id_by_code(self, course_code: str, semester: str = None) -> int:
         """Get course ID by course code and optionally semester."""
@@ -394,23 +595,116 @@ class Gradebook:
             )
         return rows[0][0]
 
+
+    def update_course(self, course_id: int, course_code: str = None, 
+                      course_title: str = None, semester: str = None):
+        """Update course details."""
+        updates = []
+        params = []
+        if course_code:
+            updates.append("course_code = ?")
+            params.append(course_code.upper())
+        if course_title:
+            updates.append("course_title = ?")
+            params.append(course_title)
+        if semester:
+            updates.append("semester = ?")
+            params.append(semester)
+
+        if updates:
+            query = f"UPDATE courses SET {', '.join(updates)} WHERE course_id = ?"
+            params.append(course_id)
+            self.cursor.execute(query, tuple(params))
+            self.conn.commit()
+
+
+    def update_assignment(self, assignment_id: int, title: str = None,
+                          max_points: float = None, earned_points: float = None, category_id: int = None):
+        """Update assignment details."""
+        updates = []
+        params = []
+        if title:
+            updates.append("title = ?")
+            params.append(title)
+        if max_points is not None:
+            updates.append("max_points = ?")
+            params.append(max_points)
+        if earned_points is not None:
+            updates.append("earned_points = ?")
+            params.append(earned_points)
+        if category_id:
+            updates.append("category_id = ?")
+            params.append(category_id)
+
+        if updates:
+            query = f"UPDATE assignments SET {', '.join(updates)} WHERE assignment_id = ?"
+            params.append(assignment_id)
+            self.cursor.execute(query, tuple(params))
+            self.conn.commit()
+
+
+    def get_all_courses(self) -> List[dict]:
+        """Get a list of all courses."""
+        self.cursor.execute('''
+        SELECT course_id, course_code, course_title, semester 
+        FROM courses 
+        ORDER BY semester, course_code
+        ''')
+        rows = self.cursor.fetchall()
+
+        return [
+            {"course_id": row[0], "course_code": row[1], "course_title": row[2], "semester": row[3]}
+            for row in rows
+        ]
+   
+    def remove_assignment(self, assignment_id: int):
+        """Remove an assignment by its ID."""
+        self.cursor.execute('''
+        DELETE FROM assignments WHERE assignment_id = ?
+        ''', (assignment_id,))
+        self.conn.commit()
+
+
+    def get_course_summary(self, course_id: int) -> dict:
+        """Get a summary of a course with grades and categories."""
+        self.cursor.execute('SELECT course_code, course_title, semester FROM courses WHERE course_id = ?', (course_id,))
+        course_info = self.cursor.fetchone()
+
+        if not course_info:
+            raise GradeBookError("Course not found")
+
+        categories = self.get_course_categories(course_id)
+        assignments = self.get_course_assignments(course_id)
+        final_grade = self.calculate_course_grade(course_id)
+
+        return {
+            "course_code": course_info[0],
+            "course_title": course_info[1],
+            "semester": course_info[2],
+            "categories": categories,
+            "assignments": assignments,
+            "final_grade": final_grade,
+        }
+
     def close(self):
         """Close the database connection."""
         self.conn.close()
 
-def main():
-    gradebook = Gradebook()
-
+def main_production():
     try:
         db_path = Path("~/.gradebook/gradebook.db").expanduser()
-        print(f"Initializing database at: {db_path}")
+        initialize_database(db_path)
+    except Exception as e:
+        print(f"Error initializing database: {str(e)}")
+        raise
+
+def initialize_database(db_path):
+    try:
+        print(f"Initializing database at {db_path}")
 
         gradebook = Gradebook(db_path)
 
-        # Add your Fall 2024 courses
         print("\nAdding courses...")
-        bio_seminar = gradebook.add_course("BIO302", "Biology Seminar", "Fall 2024")
-        print("Added BIO302")
 
         # Add your Fall 2024 courses
         bio_seminar = gradebook.add_course("BIO302", "Biology Seminar", "Fall 2024")
@@ -487,9 +781,9 @@ def main():
                 print(f"- {name}: {weight * 100}%")
 
         gradebook.close()
-    except Exception as e:
+    except GradeBookError as e:
         print(f"Error initializing database: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    main()
+    main_production()
