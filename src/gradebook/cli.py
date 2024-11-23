@@ -774,6 +774,149 @@ def view_assignment(gradebook: GradeBookCLI, course_code: str, assignment_title:
     except Exception as e:
         console.print(f"[red]Error displaying assignment:[/red] {str(e)}")
 
+
+@view.command('assignments')
+@click.argument('course_code')
+@click.option('--semester', help="Specify semester if course exists in multiple semesters")
+@click.option('--sort', type=click.Choice(['date', 'grade', 'category']), default='date',
+              help="Sort assignments by date, grade, or category (default: date)")
+@click.option('--reverse', is_flag=True, help="Reverse the sort order")
+@click.pass_obj
+def view_assignments(gradebook: GradeBookCLI, course_code: str, semester: str, sort: str, reverse: bool):
+    """Display all assignments for a course with grades and statistics.
+
+    Example:
+        gradebook view assignments CHM343
+        gradebook view assignments CHM343 --sort grade --reverse
+        gradebook view assignments CHM343 --semester "Fall 2024"
+    """
+    try:
+        cursor = gradebook.gradebook.cursor
+        course_id = gradebook.gradebook.get_course_id_by_code(course_code, semester)
+
+        # Get course info
+        cursor.execute("""
+            SELECT course_title, semester
+            FROM courses 
+            WHERE course_id = ?
+        """, (course_id,))
+
+        course_title, course_sem = cursor.fetchone()
+
+        # Get all assignments with category info
+        query = """
+            SELECT 
+                a.title,
+                a.earned_points,
+                a.max_points,
+                a.entry_date,
+                c.category_name,
+                c.weight,
+                (a.earned_points / a.max_points * 100) as percentage
+            FROM assignments a
+            JOIN categories c ON a.category_id = c.category_id
+            WHERE a.course_id = ?
+        """
+
+        # Add sorting
+        if sort == 'date':
+            query += " ORDER BY a.entry_date"
+        elif sort == 'grade':
+            query += " ORDER BY percentage"
+        else:  # category
+            query += " ORDER BY c.category_name, a.entry_date"
+
+        if reverse:
+            query += " DESC"
+
+        cursor.execute(query, (course_id,))
+        assignments = cursor.fetchall()
+
+        if not assignments:
+            console.print(f"[yellow]No assignments found for {course_code}[/yellow]")
+            return
+
+        # Create header with course info
+        console.print(Panel(
+            f"[bold blue]{course_code}:[/bold blue] {course_title}\n"
+            f"[cyan]Semester:[/cyan] {course_sem}",
+            title="Course Assignments"
+        ))
+
+        # Create assignments table
+        table = Table(box=box.ROUNDED)
+        table.add_column("Date", style="dim")
+        table.add_column("Assignment")
+        table.add_column("Category", style="cyan")
+        table.add_column("Weight", justify="right", style="magenta")
+        table.add_column("Score", justify="right")
+        table.add_column("Grade", justify="right")
+
+        # Calculate statistics
+        grades = []
+        category_grades = {}
+
+        for title, earned, max_points, date, category, weight, percentage in assignments:
+            # Format date
+            date_str = datetime.strptime(date, '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
+
+            # Format grade with color
+            if percentage >= 90:
+                grade_str = f"[green]{percentage:.1f}%[/green]"
+            elif percentage >= 80:
+                grade_str = f"[blue]{percentage:.1f}%[/blue]"
+            elif percentage >= 70:
+                grade_str = f"[yellow]{percentage:.1f}%[/yellow]"
+            else:
+                grade_str = f"[red]{percentage:.1f}%[/red]"
+
+            table.add_row(
+                date_str,
+                title,
+                category,
+                f"{weight * 100:.1f}%",
+                f"{earned}/{max_points}",
+                grade_str
+            )
+
+            # Track statistics
+            grades.append(percentage)
+            if category not in category_grades:
+                category_grades[category] = []
+            category_grades[category].append(percentage)
+
+        console.print(table)
+
+        # Show statistics
+        stats_table = Table(title="\nGrade Statistics", box=box.ROUNDED)
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value", style="green")
+
+        stats_table.add_row("Total Assignments", str(len(grades)))
+        stats_table.add_row("Overall Average", f"{statistics.mean(grades):.1f}%")
+        stats_table.add_row("Highest Grade", f"{max(grades):.1f}%")
+        stats_table.add_row("Lowest Grade", f"{min(grades):.1f}%")
+
+        # Add category averages
+        for category, cat_grades in category_grades.items():
+            stats_table.add_row(
+                f"{category} Average",
+                f"{statistics.mean(cat_grades):.1f}%"
+            )
+
+        console.print(stats_table)
+
+        # Show overall course grade
+        try:
+            overall_grade = gradebook.gradebook.calculate_course_grade(course_id)
+            console.print(f"\nCurrent Course Grade: [bold magenta]{overall_grade:.1f}%[/bold magenta]")
+        except Exception as e:
+            console.print(f"[red]Error calculating overall grade: {str(e)}[/red]")
+
+    except Exception as e:
+        console.print(f"[red]Error displaying assignments:[/red] {str(e)}")
+
+
 @view.command('course')
 @click.argument('course_code')
 @click.option('--semester', help="Specify semester if course exists in multiple semesters")

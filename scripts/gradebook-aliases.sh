@@ -44,6 +44,10 @@ alias gbc='gradebook add course'
 alias gbac='gradebook add category'
 alias gbaa='gradebook add assignment'
 
+# Editing Items
+alias gbec='gradebook edit category'
+alias gbea='gradebook edit assignment'
+
 # Viewing Commands
 alias gbvc='gradebook view courses'
 alias gbvs='gradebook view summary'

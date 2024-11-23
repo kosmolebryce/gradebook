@@ -4,17 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="8e3b8613-461b-40ba-b250-6680362c98ea" name="Changes" comment="Update: testing suite, feature completion">
-      <change afterPath="$PROJECT_DIR$/scripts/gradebook-aliases.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/gradebook-utils.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/gradebook.1" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/scripts/install-man.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/src/gradebook/.mypy.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+    <list default="true" id="8e3b8613-461b-40ba-b250-6680362c98ea" name="Changes" comment="Fixed: Floating point precision-related computational errors">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/poetry.lock" beforeDir="false" afterPath="$PROJECT_DIR$/poetry.lock" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/gradebook/db.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/gradebook/db.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/scripts/gradebook-aliases.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/gradebook-aliases.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/gradebook/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/gradebook/cli.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -267,7 +261,8 @@
       <workItem from="1732120588973" duration="4000" />
       <workItem from="1732125800339" duration="265000" />
       <workItem from="1732126071726" duration="29646000" />
-      <workItem from="1732218117821" duration="1931000" />
+      <workItem from="1732218117821" duration="2407000" />
+      <workItem from="1732342910093" duration="360000" />
     </task>
     <task id="LOCAL-00001" summary="Initial commit">
       <option name="closed" value="true" />
@@ -317,7 +312,15 @@
       <option name="project" value="LOCAL" />
       <updated>1732162352845</updated>
     </task>
-    <option name="localTasksCounter" value="7" />
+    <task id="LOCAL-00007" summary="Fixed: Floating point precision-related computational errors">
+      <option name="closed" value="true" />
+      <created>1732229035077</created>
+      <option name="number" value="00007" />
+      <option name="presentableId" value="LOCAL-00007" />
+      <option name="project" value="LOCAL" />
+      <updated>1732229035077</updated>
+    </task>
+    <option name="localTasksCounter" value="8" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -358,7 +361,8 @@
     <MESSAGE value="Bug fixes" />
     <MESSAGE value="Feature additions (edit, move) and bug fixes" />
     <MESSAGE value="Update: testing suite, feature completion" />
-    <option name="LAST_COMMIT_MESSAGE" value="Update: testing suite, feature completion" />
+    <MESSAGE value="Fixed: Floating point precision-related computational errors" />
+    <option name="LAST_COMMIT_MESSAGE" value="Fixed: Floating point precision-related computational errors" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/gradebook$cleanup_db.coverage" NAME="cleanup_db Coverage Results" MODIFIED="1732120433089" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src/gradebook" />
