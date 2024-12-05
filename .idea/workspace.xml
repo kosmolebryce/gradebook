@@ -4,11 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="8e3b8613-461b-40ba-b250-6680362c98ea" name="Changes" comment="Fixed: Floating point precision-related computational errors">
+    <list default="true" id="8e3b8613-461b-40ba-b250-6680362c98ea" name="Changes" comment="Added: `assignments` subcommand">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/scripts/gradebook-aliases.sh" beforeDir="false" afterPath="$PROJECT_DIR$/scripts/gradebook-aliases.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/gradebook/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/gradebook/cli.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -262,7 +259,7 @@
       <workItem from="1732125800339" duration="265000" />
       <workItem from="1732126071726" duration="29646000" />
       <workItem from="1732218117821" duration="2407000" />
-      <workItem from="1732342910093" duration="360000" />
+      <workItem from="1732342910093" duration="803000" />
     </task>
     <task id="LOCAL-00001" summary="Initial commit">
       <option name="closed" value="true" />
@@ -320,7 +317,15 @@
       <option name="project" value="LOCAL" />
       <updated>1732229035077</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="Added: `assignments` subcommand">
+      <option name="closed" value="true" />
+      <created>1732343453223</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1732343453223</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -362,7 +367,8 @@
     <MESSAGE value="Feature additions (edit, move) and bug fixes" />
     <MESSAGE value="Update: testing suite, feature completion" />
     <MESSAGE value="Fixed: Floating point precision-related computational errors" />
-    <option name="LAST_COMMIT_MESSAGE" value="Fixed: Floating point precision-related computational errors" />
+    <MESSAGE value="Added: `assignments` subcommand" />
+    <option name="LAST_COMMIT_MESSAGE" value="Added: `assignments` subcommand" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
     <SUITE FILE_PATH="coverage/gradebook$cleanup_db.coverage" NAME="cleanup_db Coverage Results" MODIFIED="1732120433089" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src/gradebook" />

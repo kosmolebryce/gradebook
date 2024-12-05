@@ -22,6 +22,16 @@ from rich import print as rprint
 
 from gradebook.db import Gradebook
 
+def create_styled_table(title: str) -> Table:
+    """Create a consistently styled table with neutral background."""
+    return Table(
+        title=title,
+        box=box.ROUNDED,
+        style="white on grey11",        # Very dark grey background
+        header_style="bold cyan",       # Keep colored headers
+        title_style="bold white"        # Clean white title
+    )
+
 def deprecated(message):
     """Decorator to mark commands as deprecated."""
     def decorator(f):
@@ -179,7 +189,9 @@ def add_categories(gradebook: GradeBookCLI, course_code: str, semester: str):
 
             current_categories = cursor.fetchall()
 
-            table = Table(title="Current Categories")
+            table = create_styled_table(
+                    title="\nCurrent Categories",
+                    )
             table.add_column("Category", style="cyan")
             table.add_column("Weight", style="magenta")
             table.add_column("Assignments", justify="right")
@@ -290,7 +302,7 @@ def add_categories(gradebook: GradeBookCLI, course_code: str, semester: str):
                 gradebook.gradebook.conn.commit()
                 console.print("[green]Successfully updated categories![/green]")
 
-                table = Table(title="New Categories", box=box.ROUNDED)
+                table = create_styled_table(title="\nNew Categories")
                 table.add_column("Category", style="cyan")
                 table.add_column("Weight", justify="right", style="magenta")
 
@@ -306,23 +318,19 @@ def add_categories(gradebook: GradeBookCLI, course_code: str, semester: str):
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
 
-
 @add.command('category')
 @click.argument('course_code')
 @click.argument('category_name')
 @click.argument('weight', type=float)
 @click.option('--semester', help="Specify semester if course exists in multiple semesters")
 @click.pass_obj
-def add_category(gradebook: GradeBookCLI, course_code: str, category_name: str,
+def add_category(gradebook: GradeBookCLI, course_code: str, category_name: str, 
                  weight: float, semester: str):
-    """Add a single category to a course (weight must come from Unallocated).
-
-    Example:
-        gradebook add category CHM343 "Quizzes" 0.10
-    """
+    """Add a single category to a course (weight must come from Unallocated)."""
     try:
         cursor = gradebook.gradebook.cursor
         course_id = gradebook.gradebook.get_course_id_by_code(course_code, semester)
+        tolerance = 0.0001  # Same tolerance as in db.py
 
         # Verify category doesn't already exist
         cursor.execute("""
@@ -356,24 +364,25 @@ def add_category(gradebook: GradeBookCLI, course_code: str, category_name: str,
             return
 
         unallocated_id, unallocated_weight = unallocated
-        if weight > unallocated_weight:
+        weight_difference = weight - unallocated_weight
+        
+        if weight_difference > tolerance:  # Changed comparison
             console.print(f"[red]Error: Not enough weight in Unallocated category "
                           f"(has {unallocated_weight * 100:.1f}%, needs {weight * 100:.1f}%)[/red]")
             return
 
-        # Update Unallocated weight
-        new_unallocated = unallocated_weight - weight
-        if new_unallocated > 0.0001:  # Keep if there's meaningful weight left
+        # If we get here, update the categories
+        if abs(weight_difference) <= tolerance:
+            # Weights match exactly - remove Unallocated
+            cursor.execute("DELETE FROM categories WHERE category_id = ?", (unallocated_id,))
+        else:
+            # Update Unallocated with remaining weight
+            new_unallocated = unallocated_weight - weight
             cursor.execute("""
                 UPDATE categories 
                 SET weight = ?
                 WHERE category_id = ?
             """, (new_unallocated, unallocated_id))
-        else:  # Remove if effectively zero
-            cursor.execute("""
-                DELETE FROM categories 
-                WHERE category_id = ?
-            """, (unallocated_id,))
 
         # Add the new category
         cursor.execute("""
@@ -395,27 +404,18 @@ def add_category(gradebook: GradeBookCLI, course_code: str, category_name: str,
 
         categories = cursor.fetchall()
 
-        table = Table(title=f"Categories for {course_code}", box=box.ROUNDED)
+        table = create_styled_table(title=f"\nCategories for {course_code}")
         table.add_column("Category", style="cyan")
         table.add_column("Weight", justify="right", style="green")
 
         for cat_name, cat_weight in categories:
-            style = "dim" if cat_name.lower() == "unallocated" else None
-            name_cell = f"[{style or ''}]{cat_name}[/{style or ''}]" if style else cat_name
-            weight_cell = f"[{style or ''}]{cat_weight * 100:.1f}%[/{style or ''}]" if style else f"{cat_weight * 100:.1f}%"
-
-            if cat_name == category_name:  # Highlight new category
-                name_cell = f"[bold green]{cat_name}[/bold green]"
-                weight_cell = f"[bold green]{cat_weight * 100:.1f}%[/bold green]"
-
-            table.add_row(name_cell, weight_cell)
+            table.add_row(cat_name, f"{cat_weight * 100:.1f}%")
 
         console.print(table)
 
     except Exception as e:
         gradebook.gradebook.conn.rollback()
         console.print(f"[red]Error adding category:[/red] {str(e)}")
-
 
 @add.command('assignment')
 @click.argument('course_code')
@@ -844,7 +844,7 @@ def view_assignments(gradebook: GradeBookCLI, course_code: str, semester: str, s
         ))
 
         # Create assignments table
-        table = Table(box=box.ROUNDED)
+        table = create_styled_table(title="\nAssignments")
         table.add_column("Date", style="dim")
         table.add_column("Assignment")
         table.add_column("Category", style="cyan")
@@ -888,7 +888,7 @@ def view_assignments(gradebook: GradeBookCLI, course_code: str, semester: str, s
         console.print(table)
 
         # Show statistics
-        stats_table = Table(title="\nGrade Statistics", box=box.ROUNDED)
+        stats_table = create_styled_table(title="\nGrade Statistics")
         stats_table.add_column("Metric", style="cyan")
         stats_table.add_column("Value", style="green")
 
@@ -951,7 +951,7 @@ def view_course(gradebook: GradeBookCLI, course_code: str, semester: str):
         ))
 
         # Grades breakdown
-        table = Table(box=box.ROUNDED)
+        table = create_styled_table(title="\nGrades - Breakdown") 
         table.add_column("Category", style="cyan")
         table.add_column("Weight", justify="right")
         table.add_column("Grade", justify="right", style="green")
@@ -984,7 +984,7 @@ def view_course(gradebook: GradeBookCLI, course_code: str, semester: str):
 
         recent = cursor.fetchall()
         if recent:
-            recent_table = Table(box=box.ROUNDED)
+            recent_table = create_styled_table(title="\nRecents")
             recent_table.add_column("Date", style="dim")
             recent_table.add_column("Assignment")
             recent_table.add_column("Category", style="cyan")
@@ -1062,7 +1062,7 @@ def view_courses(gradebook: GradeBookCLI, detailed: bool, semester: str):
                 if assign_count > 0:
                     try:
                         breakdown = gradebook.gradebook.get_grade_breakdown(code)
-                        table = Table(title="Grade Breakdown")
+                        table = create_styled_table(title="\nGrade Breakdown")
                         table.add_column("Category", style="cyan")
                         table.add_column("Weight", justify="right")
                         table.add_column("Grade", justify="right", style="green")
@@ -1081,7 +1081,7 @@ def view_courses(gradebook: GradeBookCLI, detailed: bool, semester: str):
                         console.print(f"[yellow]Could not calculate grades: {str(e)}[/yellow]\n")
         else:
             # Create simple table view
-            table = Table(title="Courses Overview")
+            table = create_styled_table(title="\nCourses Overview")
             table.add_column("Code", style="cyan")
             table.add_column("Title")
             table.add_column("Semester")
@@ -1137,7 +1137,7 @@ def view_category(gradebook: GradeBookCLI, course_code: str, category_name: str,
         name, weight, course_title, semester, count, avg, min_score, max_score = result
 
         # Create summary table
-        table = Table(title=f"{name} - Summary", box=box.ROUNDED)
+        table = create_styled_table(title=f"\n{name} - Summary")
         table.add_column("Metric", style="cyan")
         table.add_column("Value", style="magenta")
 
@@ -1172,7 +1172,7 @@ def view_category(gradebook: GradeBookCLI, course_code: str, category_name: str,
 
             assignments = cursor.fetchall()
 
-            table = Table(title="Assignments", box=box.ROUNDED)
+            table = create_styled_table(title="\nAssignments")
             table.add_column("Title", style="cyan")
             table.add_column("Score", justify="right")
             table.add_column("Percentage", justify="right")
@@ -1221,7 +1221,7 @@ def view_course_details(gradebook: GradeBookCLI, course_code: str, semester: str
         console.print(header)
 
         # Show category breakdown
-        table = Table(title="Category Details", box=box.ROUNDED)
+        table = create_styled_table(title="\nCategory Details")
         table.add_column("Category", style="cyan")
         table.add_column("Weight", justify="right")
         table.add_column("Raw Score", justify="right", style="magenta")
@@ -1254,7 +1254,7 @@ def view_course_details(gradebook: GradeBookCLI, course_code: str, semester: str
 
         # Show recent assignments
         if summary['assignments']:
-            table = Table(title="Recent Assignments", box=box.ROUNDED)
+            table = create_styled_table(title="\nRecent Assignments")
             table.add_column("Date", style="dim")
             table.add_column("Category", style="cyan")
             table.add_column("Assignment")
@@ -1428,7 +1428,7 @@ def view_distribution(gradebook: GradeBookCLI, course_code: str):
         max_count = max(buckets.values()) if buckets.values() else 0
         bar_width = 40
 
-        table = Table(title=f"{course_title} Grade Distribution")
+        table = create_styled_table(title=f"\n{course_title} Grade Distribution")
         table.add_column("Grade Range")
         table.add_column("Count")
         table.add_column("Distribution")
@@ -1487,7 +1487,7 @@ def view_summary(gradebook: GradeBookCLI, semester: str = None):
             console.print("[yellow]No courses found.[/yellow]")
             return
 
-        table = Table(title="Course Summary", box=box.ROUNDED)
+        table = create_styled_table(title="\nCourse Summary")
         table.add_column("Course", style="cyan")
         table.add_column("Title", style="green")
         table.add_column("Semester")
@@ -1541,7 +1541,7 @@ def view_summary(gradebook: GradeBookCLI, semester: str = None):
             semester_stats = cursor.fetchall()
 
             if len(semester_stats) > 1:  # Only show if there's more than one semester
-                table = Table(title="Semester Summaries", box=box.ROUNDED)
+                table = create_styled_table(title="\nSemester Summaries")
                 table.add_column("Semester", style="cyan")
                 table.add_column("Courses", justify="right")
                 table.add_column("Total Assignments", justify="right")
@@ -1777,7 +1777,7 @@ def edit_assignment(gradebook: GradeBookCLI, course_code: str, assignment_title:
         weighted_score = percentage * category_weight
 
         # Show success message with before/after comparison
-        table = Table(title="Assignment Updated", box=box.ROUNDED)
+        table = create_styled_table(title="\nAssignment Updated")
         table.add_column("Field", style="cyan")
         table.add_column("Old Value", style="yellow")
         table.add_column("New Value", style="green")
@@ -1949,7 +1949,7 @@ def edit_category(gradebook: GradeBookCLI, course_code: str, category_name: str,
 
         categories = cursor.fetchall()
 
-        table = Table(title="Updated Category Weights", box=box.ROUNDED)
+        table = create_styled_table(title="\nUpdated Category Weights")
         table.add_column("Category", style="cyan")
         table.add_column("Weight", justify="right", style="green")
 

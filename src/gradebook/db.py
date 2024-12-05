@@ -120,27 +120,43 @@ class Gradebook:
         return 1.0 - used_weight  # Changed from 100.0 to 1.0
 
     def add_category(self, course_id: int, category_name: str, weight: float) -> int:
-        """Add a new category for a course.
-
-        Args:
-            course_id: ID of the course
-            category_name: Name of the category
-            weight: Weight as decimal (0.0 to 1.0). Example: 0.25 for 25%
-        """
+        """Add a new category for a course."""
         if not (0 <= weight <= 1):
             raise GradeBookError(
                 f"Weight must be between 0 and 1 (0% to 100%). Got: {weight * 100}%"
             )
 
-        remaining_weight = self.get_remaining_weight(course_id)
-        tolerance = 0.0001  # Define consistent tolerance
+        # First check for Unallocated category specifically
+        self.cursor.execute("""
+            SELECT category_id, weight 
+            FROM categories 
+            WHERE course_id = ? AND LOWER(category_name) = 'unallocated'
+        """, (course_id,))
+        
+        unallocated = self.cursor.fetchone()
+        if not unallocated:
+            raise GradeBookError("No Unallocated weight available")
 
-        # Use tolerance in comparison
-        if weight > remaining_weight + tolerance:
+        unallocated_id, unallocated_weight = unallocated
+        tolerance = 0.0001
+
+        # Check if weights match within tolerance
+        if abs(weight - unallocated_weight) <= tolerance:
+            # Weights match exactly (within tolerance) - delete Unallocated and add new category
+            self.cursor.execute("DELETE FROM categories WHERE category_id = ?", (unallocated_id,))
+        elif weight > unallocated_weight:
             raise GradeBookError(
-                f"Invalid weight {weight * 100}%. Remaining weight available: {remaining_weight * 100}% (tolerance: ±{tolerance * 100}%)"
+                f"Invalid weight {weight * 100}%. Available in Unallocated: {unallocated_weight * 100}%"
+            )
+        else:
+            # Update Unallocated with remaining weight
+            new_unallocated = unallocated_weight - weight
+            self.cursor.execute(
+                "UPDATE categories SET weight = ? WHERE category_id = ?", 
+                (new_unallocated, unallocated_id)
             )
 
+        # Add the new category
         try:
             self.cursor.execute('''
             INSERT INTO categories (course_id, category_name, weight)
@@ -148,33 +164,30 @@ class Gradebook:
             ''', (course_id, category_name, weight))
             self.conn.commit()
             return self.cursor.lastrowid
-        except sqlite3.IntegrityError as e:
-            if "CHECK constraint failed" in str(e):
-                raise GradeBookError(
-                    f"Weight must be between 0 and 1 (0% to 100%). Got: {weight * 100}%"
-                )
-            raise GradeBookError(f"Category '{category_name}' already exists for this course")
-
-    def add_categories(self, course_id: int, categories: List[Tuple[str, float]]):
-        """Add multiple categories for a course at once."""
-        total_weight = sum(weight for _, weight in categories)
-        tolerance = 0.0001
-
-        if not abs(total_weight - 1.0) <= tolerance:  # Allow exact 100% with tolerance
-            raise GradeBookError(
-                f"Category weights must sum to 100% (got {total_weight * 100:.2f}%, tolerance: ±{tolerance * 100:.2f}%)"
-            )
-
-        try:
-            for category_name, weight in categories:
-                self.cursor.execute('''
-                INSERT INTO categories (course_id, category_name, weight)
-                VALUES (?, ?, ?)
-                ''', (course_id, category_name, weight))
-            self.conn.commit()
         except sqlite3.IntegrityError:
             self.conn.rollback()
-            raise GradeBookError("Duplicate category names are not allowed")
+            raise GradeBookError(f"Category '{category_name}' already exists for this course")
+
+        def add_categories(self, course_id: int, categories: List[Tuple[str, float]]):
+            """Add multiple categories for a course at once."""
+            total_weight = sum(weight for _, weight in categories)
+            tolerance = 0.0001
+
+            if not abs(total_weight - 1.0) <= tolerance:  # Allow exact 100% with tolerance
+                raise GradeBookError(
+                    f"Category weights must sum to 100% (got {total_weight * 100:.2f}%, tolerance: ±{tolerance * 100:.2f}%)"
+                )
+
+            try:
+                for category_name, weight in categories:
+                    self.cursor.execute('''
+                    INSERT INTO categories (course_id, category_name, weight)
+                    VALUES (?, ?, ?)
+                    ''', (course_id, category_name, weight))
+                self.conn.commit()
+            except sqlite3.IntegrityError:
+                self.conn.rollback()
+                raise GradeBookError("Duplicate category names are not allowed")
 
     def ensure_unassigned_category(self, course_id: int) -> int:
         """

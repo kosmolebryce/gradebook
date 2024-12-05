@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "gradebook"
-version = "0.1.2"
+version = "0.1.4"
 description = "Intuitive methods for managing academic records"
 authors = ["kosmolebryce <k.lebryce@pm.me>"]
 readme = "docs/README.md"
