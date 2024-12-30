@@ -50,8 +50,9 @@ class Gradebook:
         if not self.verify_database_initialized():
             self.create_tables()
 
+    # In db.py, update create_tables():
+
     def create_tables(self):
-        # Drop existing tables to ensure clean schema
         self.cursor.executescript('''
             DROP TABLE IF EXISTS assignments;
             DROP TABLE IF EXISTS categories;
@@ -62,10 +63,11 @@ class Gradebook:
                 course_code TEXT NOT NULL,
                 course_title TEXT NOT NULL,
                 semester TEXT NOT NULL,
+                credit_hours INTEGER NOT NULL DEFAULT 3 CHECK (credit_hours >= 0),
                 UNIQUE(course_code, semester)
             );
 
-            -- Add to create_tables() in db.py
+            -- Rest of the schema remains the same...
             CREATE TABLE categories (
                 category_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 course_id INTEGER,
@@ -76,7 +78,7 @@ class Gradebook:
                     ON UPDATE CASCADE,
                 UNIQUE(course_id, category_name)
             );
-            
+
             CREATE TABLE assignments (
                 assignment_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 course_id INTEGER,
@@ -95,6 +97,64 @@ class Gradebook:
             );
         ''')
         self.conn.commit()
+
+    def add_course(self, course_code: str, course_title: str, semester: str, credit_hours: int = 3) -> int:
+        """Add a new course to the database."""
+        try:
+            self.cursor.execute('''
+            INSERT INTO courses (course_code, course_title, semester, credit_hours)
+            VALUES (?, ?, ?, ?)
+            ''', (course_code.upper(), course_title, semester, credit_hours))
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.IntegrityError:
+            raise GradeBookError(f"Course {course_code} already exists for {semester}")
+
+    def update_course(self, course_id: int, course_code: str = None,
+                      course_title: str = None, semester: str = None, credit_hours: int = None):
+        """Update course details."""
+        updates = []
+        params = []
+        if course_code:
+            updates.append("course_code = ?")
+            params.append(course_code.upper())
+        if course_title:
+            updates.append("course_title = ?")
+            params.append(course_title)
+        if semester:
+            updates.append("semester = ?")
+            params.append(semester)
+        if credit_hours is not None:
+            if credit_hours < 0:
+                raise GradeBookError("Credit hours cannot be negative")
+            updates.append("credit_hours = ?")
+            params.append(credit_hours)
+
+        if updates:
+            query = f"UPDATE courses SET {', '.join(updates)} WHERE course_id = ?"
+            params.append(course_id)
+            self.cursor.execute(query, tuple(params))
+            self.conn.commit()
+
+    def get_all_courses(self) -> List[dict]:
+        """Get a list of all courses."""
+        self.cursor.execute('''
+        SELECT course_id, course_code, course_title, semester, credit_hours 
+        FROM courses 
+        ORDER BY semester, course_code
+        ''')
+        rows = self.cursor.fetchall()
+
+        return [
+            {
+                "course_id": row[0],
+                "course_code": row[1],
+                "course_title": row[2],
+                "semester": row[3],
+                "credit_hours": row[4]
+            }
+            for row in rows
+        ]
 
     def validate_category_weights(self, course_id: int, new_category_weight: float = 0) -> bool:
         """
@@ -353,18 +413,6 @@ class Gradebook:
 
         return course_code, course_title, semester, assignment_count
 
-    def add_course(self, course_code: str, course_title: str, semester: str) -> int:
-        """Add a new course to the database."""
-        try:
-            self.cursor.execute('''
-            INSERT INTO courses (course_code, course_title, semester)
-            VALUES (?, ?, ?)
-            ''', (course_code.upper(), course_title, semester))
-            self.conn.commit()
-            return self.cursor.lastrowid
-        except sqlite3.IntegrityError:
-            raise GradeBookError(f"Course {course_code} already exists for {semester}")
-
     def add_assignment(self, course_id: int, category_id: int, title: str,
                        max_points: float, earned_points: float) -> int:
         """Add a new assignment."""
@@ -393,7 +441,7 @@ class Gradebook:
         return self.cursor.lastrowid
 
     def calculate_course_grade(self, course_id: int) -> float:
-        """Calculate the overall weighted grade for a course."""
+        """Calculate the overall weighted grade for a course, handling extra credit properly."""
         if not self.validate_category_weights(course_id):
             raise GradeBookError("Category weights do not sum to 100%")
 
@@ -416,6 +464,7 @@ class Gradebook:
             earned, possible = self.get_category_grade(cat_id)
 
             if possible > 0:  # Only include categories with assignments
+                # Allow grade to exceed 100% for categories with extra credit
                 grade = (earned / possible) * 100
                 total_weighted_grade += grade * weight
                 total_weight += weight
@@ -534,11 +583,11 @@ class Gradebook:
         }
 
     def get_category_grade(self, category_id: int) -> tuple[float, float]:
-        """Calculate grade for a single category."""
+        """Calculate grade for a single category, properly handling extra credit."""
         self.cursor.execute('''
             SELECT 
-                COALESCE(SUM(earned_points), 0) as total_earned,
-                COALESCE(SUM(max_points), 0) as total_possible
+                SUM(earned_points) as total_earned,
+                SUM(max_points) as total_possible
             FROM assignments
             WHERE category_id = ?
         ''', (category_id,))
@@ -546,6 +595,10 @@ class Gradebook:
         earned, possible = self.cursor.fetchone()
         if possible == 0:
             return 0.0, 0.0
+
+        # Ensure we're working with actual numbers, not None
+        earned = earned or 0.0
+        possible = possible or 0.0
 
         return earned, possible
 
@@ -611,28 +664,6 @@ class Gradebook:
         return rows[0][0]
 
 
-    def update_course(self, course_id: int, course_code: str = None, 
-                      course_title: str = None, semester: str = None):
-        """Update course details."""
-        updates = []
-        params = []
-        if course_code:
-            updates.append("course_code = ?")
-            params.append(course_code.upper())
-        if course_title:
-            updates.append("course_title = ?")
-            params.append(course_title)
-        if semester:
-            updates.append("semester = ?")
-            params.append(semester)
-
-        if updates:
-            query = f"UPDATE courses SET {', '.join(updates)} WHERE course_id = ?"
-            params.append(course_id)
-            self.cursor.execute(query, tuple(params))
-            self.conn.commit()
-
-
     def update_assignment(self, assignment_id: int, title: str = None,
                           max_points: float = None, earned_points: float = None, category_id: int = None):
         """Update assignment details."""
@@ -657,20 +688,6 @@ class Gradebook:
             self.cursor.execute(query, tuple(params))
             self.conn.commit()
 
-
-    def get_all_courses(self) -> List[dict]:
-        """Get a list of all courses."""
-        self.cursor.execute('''
-        SELECT course_id, course_code, course_title, semester 
-        FROM courses 
-        ORDER BY semester, course_code
-        ''')
-        rows = self.cursor.fetchall()
-
-        return [
-            {"course_id": row[0], "course_code": row[1], "course_title": row[2], "semester": row[3]}
-            for row in rows
-        ]
    
     def remove_assignment(self, assignment_id: int):
         """Remove an assignment by its ID."""

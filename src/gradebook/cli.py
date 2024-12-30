@@ -109,8 +109,9 @@ def add():
 @click.argument('course_code')
 @click.argument('course_title')
 @click.argument('semester')
+@click.option('--credits', '-c', type=int, default=3, help="Number of credit hours (default: 3)")
 @click.pass_obj
-def add_course(gradebook: GradeBookCLI, course_code: str, course_title: str, semester: str):
+def add_course(gradebook: GradeBookCLI, course_code: str, course_title: str, semester: str, credits: int):
     """Add a new course to the gradebook."""
     try:
         cursor = gradebook.gradebook.cursor
@@ -125,15 +126,15 @@ def add_course(gradebook: GradeBookCLI, course_code: str, course_title: str, sem
             console.print(f"[yellow]Course {course_code} already exists for {semester}![/yellow]")
             return
 
-        # Add the course - simplified without RETURNING clause
+        # Add the course with credit hours
         cursor.execute("""
-            INSERT INTO courses (course_code, course_title, semester) 
-            VALUES (?, ?, ?)
-        """, (course_code, course_title, semester))
+            INSERT INTO courses (course_code, course_title, semester, credit_hours) 
+            VALUES (?, ?, ?, ?)
+        """, (course_code, course_title, semester, credits))
 
         gradebook.gradebook.conn.commit()
 
-        # Verify the course was added by selecting it
+        # Verify the course was added
         cursor.execute("""
             SELECT course_id FROM courses 
             WHERE course_code = ? AND semester = ?
@@ -142,14 +143,14 @@ def add_course(gradebook: GradeBookCLI, course_code: str, course_title: str, sem
         result = cursor.fetchone()
         if result:
             course_id = result[0]
-            console.print(f"[green]Successfully added course:[/green] {course_code}: {course_title} ({semester})")
+            console.print(f"[green]Successfully added course:[/green] {course_code}: {course_title} ({semester}, {credits} credits)")
             console.print(f"[dim]Debug: Added course with ID {course_id}[/dim]")
             console.print(f"Now add categories with: gradebook add categories {course_code}")
         else:
             console.print("[red]Failed to verify course was added![/red]")
 
     except Exception as e:
-        gradebook.gradebook.conn.rollback()  # Rollback on error
+        gradebook.gradebook.conn.rollback()
         console.print(f"[red]Error adding course:[/red] {str(e)}")
 
 
@@ -417,6 +418,7 @@ def add_category(gradebook: GradeBookCLI, course_code: str, category_name: str,
         gradebook.gradebook.conn.rollback()
         console.print(f"[red]Error adding category:[/red] {str(e)}")
 
+
 @add.command('assignment')
 @click.argument('course_code')
 @click.argument('category_name')
@@ -430,73 +432,23 @@ def add_assignment(gradebook: GradeBookCLI, course_code: str, category_name: str
 
     Example:
         gradebook add assignment CHM343 "Homework" "Lab Report 1" 100 85
+        gradebook add assignment CHM343 "Homework" "Extra Credit Lab" 10 12
     """
     try:
         cursor = gradebook.gradebook.cursor
 
-        # Get course ID
-        cursor.execute("""
-            SELECT course_id, semester 
-            FROM courses 
-            WHERE course_code = ?
-        """, (course_code,))
-
-        courses = cursor.fetchall()
-        if not courses:
-            console.print(f"[red]Error:[/red] Course '{course_code}' not found")
-            return
-        elif len(courses) > 1:
-            semesters = [c[1] for c in courses]
-            console.print(
-                f"[yellow]Multiple sections found for {course_code}. Available semesters: {', '.join(semesters)}")
-            semester = Prompt.ask("Please specify semester")
-            cursor.execute("""
-                SELECT course_id 
-                FROM courses 
-                WHERE course_code = ? AND semester = ?
-            """, (course_code, semester))
-            result = cursor.fetchone()
-            if not result:
-                console.print(f"[red]Error:[/red] Course '{course_code}' not found for semester '{semester}'")
-                return
-            course_id = result[0]
-        else:
-            course_id = courses[0][0]
-
-        # Get category ID
-        cursor.execute("""
-            SELECT category_id 
-            FROM categories 
-            WHERE course_id = ? AND category_name = ?
-        """, (course_id, category_name))
-
-        category = cursor.fetchone()
-        if not category:
-            console.print(f"[red]Error:[/red] Category '{category_name}' not found")
-            # Show available categories
-            cursor.execute("""
-                SELECT category_name, weight 
-                FROM categories 
-                WHERE course_id = ?
-                ORDER BY category_name
-            """, (course_id,))
-            categories = cursor.fetchall()
-            if categories:
-                console.print("\nAvailable categories:")
-                for name, weight in categories:
-                    console.print(f"- {name} ({weight * 100:.1f}%)")
-            return
-
-        category_id = category[0]
-
-        # Validate points
-        if earned_points > max_points:
-            console.print(f"[red]Error:[/red] Earned points ({earned_points}) cannot exceed max points ({max_points})")
-            return
-
+        # Basic validation
         if max_points <= 0:
             console.print(f"[red]Error:[/red] Max points must be greater than 0")
             return
+
+        if earned_points < 0:
+            console.print(f"[red]Error:[/red] Earned points cannot be negative")
+            return
+
+        # Get course ID and validate category
+        course_id = gradebook.gradebook.get_course_id_by_code(course_code)
+        category_id = gradebook.gradebook.get_category_id(course_code, category_name)
 
         # Add the assignment
         assignment_id = gradebook.gradebook.add_assignment(
@@ -504,13 +456,19 @@ def add_assignment(gradebook: GradeBookCLI, course_code: str, category_name: str
         )
 
         percentage = (earned_points / max_points) * 100
+        extra_credit = earned_points > max_points
 
-        # Create success message with detailed information
-        console.print(Panel(f"""[green]Successfully added assignment![/green]
+        # Create success message with extra credit indication
+        message = f"""[green]Successfully added assignment![/green]
 Course: {course_code}
 Category: {category_name}
 Title: {title}
-Score: {earned_points}/{max_points} ({percentage:.2f}%)""",
+Score: {earned_points}/{max_points} ({percentage:.2f}%)"""
+
+        if extra_credit:
+            message += f"\n[yellow]Extra Credit![/yellow] Earned {earned_points - max_points} points above maximum"
+
+        console.print(Panel(message,
                             title="New Assignment",
                             border_style="green"
                             ))
@@ -1018,6 +976,7 @@ def view_courses(gradebook: GradeBookCLI, detailed: bool, semester: str):
                 c.course_code, 
                 c.course_title, 
                 c.semester,
+                c.credit_hours,
                 COUNT(DISTINCT a.assignment_id) as assignment_count,
                 COUNT(DISTINCT cat.category_id) as category_count
             FROM courses c
@@ -1046,12 +1005,13 @@ def view_courses(gradebook: GradeBookCLI, detailed: bool, semester: str):
         if detailed:
             # Create detailed view with grade breakdowns
             for course in courses:
-                code, title, sem, assign_count, cat_count = course
+                code, title, sem, credits, assign_count, cat_count = course
 
                 panel = Panel(
                     Group(
                         Text(f"[bold blue]{code}:[/bold blue] {title}"),
                         Text(f"[cyan]Semester:[/cyan] {sem}"),
+                        Text(f"[magenta]Credits:[/magenta] {credits}"),
                         Text(f"[green]Categories:[/green] {cat_count}"),
                         Text(f"[yellow]Assignments:[/yellow] {assign_count}"),
                     ),
@@ -1645,6 +1605,103 @@ def edit():
     pass
 
 
+@edit.command('course')
+@click.argument('course_code')
+@click.option('--new-code', help="New course code")
+@click.option('--title', help="New course title")
+@click.option('--semester', help="New semester")
+@click.option('--credits', type=int, help="New credit hours")
+@click.pass_obj
+def edit_course(gradebook: GradeBookCLI, course_code: str, new_code: str,
+                title: str, semester: str, credits: int):
+    """Edit course details.
+
+    Example:
+        gradebook edit course CHM343 --title "New Title"
+        gradebook edit course CHM343 --credits 4
+    """
+    try:
+        cursor = gradebook.gradebook.cursor
+
+        # Get current course details
+        cursor.execute("""
+            SELECT course_id, course_code, course_title, semester, credit_hours
+            FROM courses 
+            WHERE course_code = ?
+        """, (course_code,))
+
+        result = cursor.fetchone()
+        if not result:
+            console.print(f"[red]Course '{course_code}' not found[/red]")
+            return
+
+        course_id, curr_code, curr_title, curr_semester, curr_credits = result
+
+        # Build update query based on provided options
+        updates = []
+        params = []
+
+        if new_code:
+            updates.append("course_code = ?")
+            params.append(new_code.upper())
+
+        if title:
+            updates.append("course_title = ?")
+            params.append(title)
+
+        if semester:
+            updates.append("semester = ?")
+            params.append(semester)
+
+        if credits is not None:
+            if credits <= 0:
+                console.print("[red]Error: Credit hours must be greater than 0[/red]")
+                return
+            updates.append("credit_hours = ?")
+            params.append(credits)
+
+        if not updates:
+            console.print("[yellow]No changes specified. Use --help to see available options.[/yellow]")
+            return
+
+        # Add course_id to params
+        params.append(course_id)
+
+        # Perform update
+        query = f"UPDATE courses SET {', '.join(updates)} WHERE course_id = ?"
+        cursor.execute(query, params)
+        gradebook.gradebook.conn.commit()
+
+        # Show before/after comparison
+        table = Table(title="Course Updated", box=box.ROUNDED)
+        table.add_column("Field", style="cyan")
+        table.add_column("Old Value", style="yellow")
+        table.add_column("New Value", style="green")
+
+        # Get updated course details
+        cursor.execute("""
+            SELECT course_code, course_title, semester, credit_hours
+            FROM courses 
+            WHERE course_id = ?
+        """, (course_id,))
+        new_code, new_title, new_sem, new_credits = cursor.fetchone()
+
+        if new_code != curr_code:
+            table.add_row("Course Code", curr_code, new_code)
+        if new_title != curr_title:
+            table.add_row("Title", curr_title, new_title)
+        if new_sem != curr_semester:
+            table.add_row("Semester", curr_semester, new_sem)
+        if new_credits != curr_credits:
+            table.add_row("Credit Hours", str(curr_credits), str(new_credits))
+
+        console.print(table)
+
+    except Exception as e:
+        gradebook.gradebook.conn.rollback()
+        console.print(f"[red]Error editing course:[/red] {str(e)}")
+
+
 @edit.command('assignment')
 @click.argument('course_code')
 @click.argument('assignment_title')
@@ -2044,7 +2101,7 @@ def export_course_to_file(gradebook: GradeBookCLI, course_code: str, output_path
                     if current_category and category_count > 0:
                         f.write(f"Category Average: {(category_total / category_count):.2f}%\n\n")
 
-                    f.write(f"{cat_name} ({weight:.2f}%)\n")
+                    f.write(f"{cat_name} ({(weight * 100):.2f}%)\n")
                     f.write("-" * 64 + "\n")
                     current_category = cat_name
                     category_total = 0.0
